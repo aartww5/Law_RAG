@@ -1,0 +1,2 @@
+"""Unified legal RAG package."""
+

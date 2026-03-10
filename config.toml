@@ -1,0 +1,15 @@
+# Paths are resolved relative to the repository root.
+
+[runtime]
+mode = "mini"
+ollama_model = "qwen35-law:q6k-stable"
+streaming = true
+max_context_articles = 6
+max_history_turns = 4
+
+[index]
+laws_dir = "RAG/Chinese-Laws"
+qdrant_path = "unified_app/storage/qdrant"
+bm25_cache_path = "unified_app/storage/bm25"
+mini_working_dir = "test/minirag_working"
+corpus_dir = "unified_app/storage/corpus"
