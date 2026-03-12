@@ -89,6 +89,16 @@ def get_or_create_conversation_state(
     return state
 
 
+def has_chainlit_context() -> bool:
+    if cl is None:
+        return False
+    try:
+        _ = cl.context.session
+    except Exception:
+        return False
+    return True
+
+
 async def process_user_message(
     message,
     *,
@@ -105,7 +115,7 @@ async def process_user_message(
 
     answer_chunks: list[str] = []
 
-    if cl is not None:
+    if has_chainlit_context():
         assistant_message = message_factory(content="")
         async with cl.Step(name="💭 Thinking", type="llm") as thinking_step:
             thinking_step.language = "markdown"

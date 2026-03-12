@@ -88,3 +88,27 @@ def test_env_overrides_config_toml(monkeypatch) -> None:
         assert config.index.laws_dir == root / "custom-laws"
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def test_config_reads_hybrid_index_settings_from_config_toml() -> None:
+    root = make_test_root()
+    try:
+        config_dir = root / "unified_app"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[index]",
+                    'qdrant_collection_name = "demo_collection"',
+                    'embedding_model = "BAAI/bge-m3"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = AppConfig.from_env(root)
+
+        assert config.index.qdrant_collection_name == "demo_collection"
+        assert config.index.embedding_model == "BAAI/bge-m3"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)

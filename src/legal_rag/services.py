@@ -133,7 +133,7 @@ class LegalAssistantService:
         service = cls(
             config=config,
             exact_retriever=ExactMatchRetriever(article_records),
-            hybrid_retriever=HybridRetriever.from_articles(article_records),
+            hybrid_retriever=HybridRetriever.from_articles(article_records, index_config=config.index),
             mini_retriever=mini_retriever,
             router=AutoRouter(),
             generator=SimpleGenerator(config.runtime.ollama_model),

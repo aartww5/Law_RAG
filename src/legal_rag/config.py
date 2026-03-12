@@ -21,7 +21,9 @@ class RuntimeConfig:
 class IndexConfig:
     laws_dir: Path = Path("RAG/Chinese-Laws")
     qdrant_path: Path = Path("unified_app/storage/qdrant")
+    qdrant_collection_name: str = "chinese_laws_article_based"
     bm25_cache_path: Path = Path("unified_app/storage/bm25")
+    embedding_model: str = "BAAI/bge-m3"
     mini_working_dir: Path = Path("unified_app/storage/minirag_working")
     corpus_dir: Path = Path("unified_app/storage/corpus")
 
@@ -90,7 +92,12 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
 
     laws_dir = _resolve_path(index_data.get("laws_dir"), root, defaults.laws_dir)
     qdrant_path = _resolve_path(index_data.get("qdrant_path"), root, defaults.qdrant_path)
+    qdrant_collection_name = (
+        str(index_data.get("qdrant_collection_name", defaults.qdrant_collection_name)).strip()
+        or defaults.qdrant_collection_name
+    )
     bm25_cache_path = _resolve_path(index_data.get("bm25_cache_path"), root, defaults.bm25_cache_path)
+    embedding_model = str(index_data.get("embedding_model", defaults.embedding_model)).strip() or defaults.embedding_model
     corpus_dir = _resolve_path(index_data.get("corpus_dir"), root, defaults.corpus_dir)
 
     mini_working_dir_value = index_data.get("mini_working_dir")
@@ -103,8 +110,12 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         laws_dir = _resolve_path(os.environ["LEGAL_RAG_LAWS_DIR"], root, laws_dir)
     if "LEGAL_RAG_QDRANT_PATH" in os.environ:
         qdrant_path = _resolve_path(os.environ["LEGAL_RAG_QDRANT_PATH"], root, qdrant_path)
+    if "LEGAL_RAG_QDRANT_COLLECTION_NAME" in os.environ:
+        qdrant_collection_name = os.environ["LEGAL_RAG_QDRANT_COLLECTION_NAME"].strip() or qdrant_collection_name
     if "LEGAL_RAG_BM25_CACHE_PATH" in os.environ:
         bm25_cache_path = _resolve_path(os.environ["LEGAL_RAG_BM25_CACHE_PATH"], root, bm25_cache_path)
+    if "LEGAL_RAG_EMBEDDING_MODEL" in os.environ:
+        embedding_model = os.environ["LEGAL_RAG_EMBEDDING_MODEL"].strip() or embedding_model
     if "LEGAL_RAG_CORPUS_DIR" in os.environ:
         corpus_dir = _resolve_path(os.environ["LEGAL_RAG_CORPUS_DIR"], root, corpus_dir)
     if "LEGAL_RAG_MINI_WORKING_DIR" in os.environ:
@@ -113,7 +124,9 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
     return IndexConfig(
         laws_dir=laws_dir,
         qdrant_path=qdrant_path,
+        qdrant_collection_name=qdrant_collection_name,
         bm25_cache_path=bm25_cache_path,
+        embedding_model=embedding_model,
         mini_working_dir=mini_working_dir,
         corpus_dir=corpus_dir,
     )

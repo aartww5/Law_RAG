@@ -7,6 +7,7 @@ from types import ModuleType
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import legal_rag.rewrite as rewrite_module
+import legal_rag.services as services_module
 from legal_rag.config import AppConfig, IndexConfig, RuntimeConfig
 from legal_rag.generation.llm import SimpleGenerator
 from legal_rag.rewrite import QueryRewriter
@@ -157,6 +158,61 @@ def test_service_uses_configured_ollama_model_for_rewrite(tmp_path: Path) -> Non
     service = LegalAssistantService.from_config(config, articles=[article])
 
     assert service.rewriter.model_name == "qwen35-law:q6k-stable"
+
+
+def test_service_passes_hybrid_index_config_to_retriever(monkeypatch, tmp_path: Path) -> None:
+    article = NormalizedArticle(
+        canonical_id="民法典:1138",
+        law_name="中华人民共和国民法典",
+        law_aliases=["中华人民共和国民法典", "民法典"],
+        article_id_cn="第一千一百三十八条",
+        article_id_num="1138",
+        content="口头遗嘱应当有两个以上见证人在场见证。",
+        chapter=None,
+        section=None,
+        source="民法典.txt",
+        source_line=1,
+    )
+    captured: dict[str, str] = {}
+
+    def fake_from_articles(articles, *, index_config=None, **kwargs):
+        captured["collection_name"] = index_config.qdrant_collection_name
+        captured["embedding_model"] = index_config.embedding_model
+        return services_module.HybridRetriever.fake_for_test(
+            [
+                {
+                    "canonical_id": article.canonical_id,
+                    "content": article.content,
+                    "metadata": {
+                        "law_name": article.law_name,
+                        "law_aliases": article.law_aliases,
+                        "article_id_cn": article.article_id_cn,
+                        "article_id_num": article.article_id_num,
+                    },
+                    "score": 0.9,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(services_module.HybridRetriever, "from_articles", staticmethod(fake_from_articles))
+
+    config = AppConfig(
+        runtime=RuntimeConfig(mode="hybrid", ollama_model="qwen35-law:q6k-stable"),
+        index=IndexConfig(
+            laws_dir=tmp_path / "laws",
+            qdrant_path=tmp_path / "qdrant",
+            qdrant_collection_name="demo_collection",
+            bm25_cache_path=tmp_path / "bm25",
+            embedding_model="BAAI/bge-m3",
+            mini_working_dir=tmp_path / "mini",
+            corpus_dir=tmp_path / "corpus",
+        ),
+    )
+
+    LegalAssistantService.from_config(config, articles=[article])
+
+    assert captured["collection_name"] == "demo_collection"
+    assert captured["embedding_model"] == "BAAI/bge-m3"
 
 
 def test_conversation_state_keeps_recent_turns() -> None:

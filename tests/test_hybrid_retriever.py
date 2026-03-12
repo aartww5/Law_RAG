@@ -33,6 +33,34 @@ def test_hybrid_retriever_returns_ranked_docs_from_shared_contract() -> None:
     assert result.confidence > 0
 
 
+def test_bm25_tokenizer_uses_jieba_words_and_preserves_ascii() -> None:
+    backends_module = importlib.import_module("legal_rag.retrievers.backends")
+
+    tokens = backends_module.tokenize_for_bm25("民法典1138条口头遗嘱")
+
+    assert "民法典" in tokens
+    assert "1138" in tokens
+    assert "口头" in tokens
+
+
+def test_weighted_rrf_fuses_rank_lists_from_multiple_backends() -> None:
+    backends_module = importlib.import_module("legal_rag.retrievers.backends")
+
+    fused = backends_module.weighted_rrf(
+        [
+            ([("law:1138", 4.0), ("law:1139", 3.0)], 1.0),
+            ([("law:1139", 0.8), ("law:1138", 0.6)], 1.0),
+            ([("law:1138", 0.5)], 0.5),
+        ],
+        k=60,
+    )
+
+    ranked = sorted(fused.items(), key=lambda item: item[1], reverse=True)
+
+    assert ranked[0][0] == "law:1138"
+    assert ranked[0][1] > ranked[1][1]
+
+
 def test_hybrid_retriever_can_rank_real_articles() -> None:
     retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
     types_module = importlib.import_module("legal_rag.types")
@@ -158,3 +186,99 @@ def test_hybrid_retriever_prioritizes_article_one_in_real_corpus() -> None:
     result = retriever.retrieve("\u6c11\u6cd5\u5178\u7b2c\u4e00\u6761\u662f\u4ec0\u4e48")
 
     assert result.docs[0].metadata["article_id_num"] == "1"
+
+
+def test_hybrid_retriever_fuses_bm25_and_vector_results_with_exact_bias() -> None:
+    retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
+    types_module = importlib.import_module("legal_rag.types")
+
+    HybridRetriever = retriever_module.HybridRetriever
+    NormalizedArticle = types_module.NormalizedArticle
+
+    articles = [
+        NormalizedArticle(
+            canonical_id="law:1138",
+            law_name="中华人民共和国民法典",
+            law_aliases=["中华人民共和国民法典", "民法典"],
+            article_id_cn="第一千一百三十八条",
+            article_id_num="1138",
+            content="口头遗嘱应当有两个以上见证人在场见证。",
+            chapter=None,
+            section=None,
+            source="civil_code.txt",
+            source_line=1,
+        ),
+        NormalizedArticle(
+            canonical_id="law:1139",
+            law_name="中华人民共和国民法典",
+            law_aliases=["中华人民共和国民法典", "民法典"],
+            article_id_cn="第一千一百三十九条",
+            article_id_num="1139",
+            content="录音录像遗嘱应当有两个以上见证人在场见证。",
+            chapter=None,
+            section=None,
+            source="civil_code.txt",
+            source_line=2,
+        ),
+    ]
+
+    class FakeBm25Backend:
+        def retrieve(self, question: str, *, limit: int = 20):
+            return [("law:1139", 8.0), ("law:1138", 7.2)]
+
+    class FakeVectorBackend:
+        def retrieve(self, question: str, *, limit: int = 20):
+            return [("law:1138", 0.92), ("law:1139", 0.86)]
+
+    retriever = HybridRetriever.from_articles(
+        articles,
+        bm25_backend=FakeBm25Backend(),
+        vector_backend=FakeVectorBackend(),
+        enable_backends=False,
+    )
+    result = retriever.retrieve("民法典第一千一百三十八条口头遗嘱")
+
+    assert result.docs[0].canonical_id == "law:1138"
+    assert result.docs[0].score_breakdown["rrf"] > 0
+    assert result.docs[0].score_breakdown["article_bonus"] >= 1.0
+
+
+def test_hybrid_retriever_falls_back_to_rule_scoring_when_backends_unavailable() -> None:
+    retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
+    types_module = importlib.import_module("legal_rag.types")
+
+    HybridRetriever = retriever_module.HybridRetriever
+    NormalizedArticle = types_module.NormalizedArticle
+
+    articles = [
+        NormalizedArticle(
+            canonical_id="law:1138",
+            law_name="中华人民共和国民法典",
+            law_aliases=["民法典"],
+            article_id_cn="第一千一百三十八条",
+            article_id_num="1138",
+            content="口头遗嘱应当有两个以上见证人在场见证。",
+            chapter=None,
+            section=None,
+            source="civil_code.txt",
+            source_line=1,
+        ),
+        NormalizedArticle(
+            canonical_id="law:1139",
+            law_name="中华人民共和国民法典",
+            law_aliases=["民法典"],
+            article_id_cn="第一千一百三十九条",
+            article_id_num="1139",
+            content="录音录像遗嘱应当有两个以上见证人在场见证。",
+            chapter=None,
+            section=None,
+            source="civil_code.txt",
+            source_line=2,
+        ),
+    ]
+
+    retriever = HybridRetriever.from_articles(articles, enable_backends=False)
+    result = retriever.retrieve("口头遗嘱需要几个见证人")
+
+    assert result.docs[0].canonical_id == "law:1138"
+    assert "rule_score_fallback" in result.reasons
