@@ -35,6 +35,15 @@ def install_fake_ollama(monkeypatch, chat_impl) -> None:
     monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
 
 
+def test_auto_mode_keeps_hybrid_when_confidence_is_usable() -> None:
+    service = LegalAssistantService.for_test(mode="auto")
+
+    answer = service.handle_message("口头遗嘱需要几个人见证")
+
+    assert answer.route_decision.selected_mode == "hybrid"
+    assert answer.route_decision.fallback_triggered is False
+
+
 def test_service_handles_hybrid_mode_with_shared_pipeline() -> None:
     service = LegalAssistantService.for_test(mode="hybrid")
     answer = service.handle_message("民法典1138条怎么规定")

@@ -14,7 +14,48 @@ from legal_rag.types import NormalizedArticle
 
 
 def test_auto_disables_mini_fallback_when_mini_is_unavailable() -> None:
-    service = LegalAssistantService.for_test(mode="auto", mini_available=False)
+    article = NormalizedArticle(
+        canonical_id="law:1138",
+        law_name="中华人民共和国民法典",
+        law_aliases=["中华人民共和国民法典", "民法典"],
+        article_id_cn="第一千一百三十八条",
+        article_id_num="1138",
+        content="口头遗嘱应当有两个以上见证人在场见证。",
+        chapter=None,
+        section=None,
+        source="civil_code.txt",
+        source_line=1,
+    )
+
+    service = LegalAssistantService(
+        config=AppConfig(runtime=RuntimeConfig(mode="auto")),
+        exact_retriever=ExactMatchRetriever([]),
+        hybrid_retriever=HybridRetriever.fake_for_test(
+            [
+                {
+                    "canonical_id": article.canonical_id,
+                    "content": article.content,
+                    "metadata": {
+                        "law_name": article.law_name,
+                        "law_aliases": article.law_aliases,
+                        "article_id_cn": article.article_id_cn,
+                        "article_id_num": article.article_id_num,
+                    },
+                    "score": 0.20,
+                },
+                {
+                    "canonical_id": "other:1",
+                    "content": "其他法条",
+                    "metadata": {"law_name": "其他法律", "article_id_num": "1"},
+                    "score": 0.19,
+                },
+            ]
+        ),
+        mini_retriever=MiniRetriever.fake_for_test([]),
+        generator=SimpleGenerator(enable_ollama=False),
+    )
+    service.mini_available = False
+
     answer = service.handle_message("\u4e34\u7ec8\u53e3\u5934\u9057\u5631\u6709\u6548\u5417")
 
     assert answer.route_decision.selected_mode == "hybrid"
@@ -57,13 +98,13 @@ def test_auto_degrades_to_hybrid_when_mini_returns_runtime_error() -> None:
                         "article_id_cn": article.article_id_cn,
                         "article_id_num": article.article_id_num,
                     },
-                    "score": 0.72,
+                    "score": 0.20,
                 },
                 {
                     "canonical_id": "other:1",
                     "content": "\u5176\u4ed6\u6cd5\u6761",
                     "metadata": {"law_name": "\u5176\u4ed6\u6cd5\u5f8b", "article_id_num": "1"},
-                    "score": 0.71,
+                    "score": 0.19,
                 },
             ]
         ),
