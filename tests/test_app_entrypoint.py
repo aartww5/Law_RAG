@@ -227,3 +227,108 @@ def test_process_user_message_streams_answer_and_persists_conversation_state() -
     assert "[citations]" in assistant_message.content
     assert "history_attached" not in assistant_message.content
     assert session.get("conversation_state").turns[-1].raw_query == "他侄子能继承吗"
+
+
+def test_process_user_message_offloads_blocking_work_to_threads(monkeypatch) -> None:
+    app_path = Path(__file__).resolve().parents[1] / "app.py"
+    spec = importlib.util.spec_from_file_location("unified_app_app", app_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    monkeypatch.setattr(module, "has_chainlit_context", lambda: False)
+
+    calls: list[str] = []
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append(getattr(func, "__name__", repr(func)))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(module, "asyncio", asyncio, raising=False)
+    monkeypatch.setattr(module.asyncio, "to_thread", fake_to_thread)
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.data = {}
+
+        def get(self, key, default=None):
+            return self.data.get(key, default)
+
+        def set(self, key, value) -> None:
+            self.data[key] = value
+
+    class FakeAssistantMessage:
+        def __init__(self, content="", **kwargs) -> None:
+            self.content = content
+
+        async def send(self):
+            return self
+
+        async def stream_token(self, token: str):
+            self.content += token
+
+        async def update(self):
+            return self
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.config = SimpleNamespace(runtime=SimpleNamespace(max_history_turns=4))
+
+        def prepare_answer(self, question, mode=None, conversation_state=None):
+            context = AnswerContext(
+                question=question,
+                docs=[],
+                route_decision=RouteDecision(
+                    selected_mode="hybrid",
+                    fallback_triggered=False,
+                    confidence=1.0,
+                    merge_policy="hybrid_plus_exact",
+                    reasons=["exact_match"],
+                ),
+                citations=[],
+                source_summary={"doc_count": 0},
+            )
+            return SimpleNamespace(
+                raw_query=question,
+                rewrite_result=RewriteResult(
+                    original_query=question,
+                    rewritten_query=question,
+                    rewrite_notes=["unchanged"],
+                ),
+                context=context,
+                route_decision=context.route_decision,
+            )
+
+        def stream_answer(self, prepared):
+            yield "A"
+            yield "B"
+
+        def finalize_answer(self, prepared, answer_text: str) -> FinalAnswer:
+            return FinalAnswer(
+                answer_text=answer_text,
+                route_decision=prepared.route_decision,
+                context=prepared.context,
+                rewrite_result=prepared.rewrite_result,
+            )
+
+        def build_conversation_turn(self, answer: FinalAnswer):
+            return module.ConversationTurn(
+                raw_query=answer.rewrite_result.original_query,
+                rewritten_query=answer.rewrite_result.rewritten_query,
+                answer_summary=answer.answer_text,
+                citations=answer.context.citations,
+            )
+
+    asyncio.run(
+        module.process_user_message(
+            SimpleNamespace(content="测试问题"),
+            service=FakeService(),
+            session=FakeSession(),
+            message_factory=FakeAssistantMessage,
+        )
+    )
+
+    assert "prepare_answer" in calls
+    assert "_next_stream_chunk" in calls
+    assert "finalize_answer" in calls
+    assert "build_conversation_turn" in calls

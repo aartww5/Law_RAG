@@ -1,5 +1,6 @@
 """Unified legal RAG application entrypoint."""
 
+import asyncio
 import logging
 from pathlib import Path
 import sys
@@ -99,6 +100,13 @@ def has_chainlit_context() -> bool:
     return True
 
 
+def _next_stream_chunk(stream) -> tuple[str, bool]:
+    try:
+        return next(stream), False
+    except StopIteration:
+        return "", True
+
+
 async def process_user_message(
     message,
     *,
@@ -111,9 +119,10 @@ async def process_user_message(
         return
 
     state = get_or_create_conversation_state(session, service)
-    prepared = service.prepare_answer(raw_query, conversation_state=state)
+    prepared = await asyncio.to_thread(service.prepare_answer, raw_query, None, state)
 
     answer_chunks: list[str] = []
+    stream = service.stream_answer(prepared)
 
     if has_chainlit_context():
         assistant_message = message_factory(content="")
@@ -121,7 +130,11 @@ async def process_user_message(
             thinking_step.language = "markdown"
             is_thinking = False
 
-            for chunk in service.stream_answer(prepared):
+            while True:
+                chunk, is_done = await asyncio.to_thread(_next_stream_chunk, stream)
+                if is_done:
+                    break
+
                 if "<think>" in chunk:
                     is_thinking = True
                     chunk = chunk.replace("<think>", "")
@@ -137,15 +150,21 @@ async def process_user_message(
                 else:
                     answer_chunks.append(chunk)
                     await assistant_message.stream_token(chunk)
+                await asyncio.sleep(0)
     else:
         assistant_message = message_factory(content="")
         await assistant_message.send()
-        for chunk in service.stream_answer(prepared):
+        while True:
+            chunk, is_done = await asyncio.to_thread(_next_stream_chunk, stream)
+            if is_done:
+                break
             answer_chunks.append(chunk)
             await assistant_message.stream_token(chunk)
+            await asyncio.sleep(0)
 
-    answer = service.finalize_answer(prepared, "".join(answer_chunks))
-    state.add_turn(service.build_conversation_turn(answer))
+    answer = await asyncio.to_thread(service.finalize_answer, prepared, "".join(answer_chunks))
+    conversation_turn = await asyncio.to_thread(service.build_conversation_turn, answer)
+    state.add_turn(conversation_turn)
     session.set("conversation_state", state)
 
     assistant_message.content = format_answer_message(answer)
