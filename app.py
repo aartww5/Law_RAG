@@ -103,15 +103,38 @@ async def process_user_message(
     state = get_or_create_conversation_state(session, service)
     prepared = service.prepare_answer(raw_query, conversation_state=state)
 
-    assistant_message = message_factory(content="")
-    await assistant_message.send()
+    answer_chunks: list[str] = []
 
-    chunks: list[str] = []
-    for chunk in service.stream_answer(prepared):
-        chunks.append(chunk)
-        await assistant_message.stream_token(chunk)
+    if cl is not None:
+        assistant_message = message_factory(content="")
+        async with cl.Step(name="💭 Thinking", type="llm") as thinking_step:
+            thinking_step.language = "markdown"
+            is_thinking = False
 
-    answer = service.finalize_answer(prepared, "".join(chunks))
+            for chunk in service.stream_answer(prepared):
+                if "<think>" in chunk:
+                    is_thinking = True
+                    chunk = chunk.replace("<think>", "")
+                if "</think>" in chunk:
+                    is_thinking = False
+                    chunk = chunk.replace("</think>", "")
+
+                if not chunk:
+                    continue
+
+                if is_thinking:
+                    await thinking_step.stream_token(chunk)
+                else:
+                    answer_chunks.append(chunk)
+                    await assistant_message.stream_token(chunk)
+    else:
+        assistant_message = message_factory(content="")
+        await assistant_message.send()
+        for chunk in service.stream_answer(prepared):
+            answer_chunks.append(chunk)
+            await assistant_message.stream_token(chunk)
+
+    answer = service.finalize_answer(prepared, "".join(answer_chunks))
     state.add_turn(service.build_conversation_turn(answer))
     session.set("conversation_state", state)
 

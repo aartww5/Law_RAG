@@ -1,6 +1,6 @@
 from legal_rag.retrievers.exact_match import extract_article_num
 from legal_rag.types import NormalizedArticle, RetrievedDoc, RetrievalResult
-from legal_rag.utils.text import keyword_tokens
+from legal_rag.utils.text import keyword_tokens, split_structured_query
 
 
 LAW_MATCH_BONUS = 0.2
@@ -67,12 +67,19 @@ class HybridRetriever:
         )
 
     def _score_question_against_doc(self, question: str, content: str, metadata: dict) -> float:
-        query_tokens = set(keyword_tokens(question))
+        background_text, current_text = split_structured_query(question)
+        query_text = current_text or question
+        query_tokens = set(keyword_tokens(query_text))
         doc_tokens = set(keyword_tokens(content))
         if not query_tokens or not doc_tokens:
             return 0.0
 
         overlap = len(query_tokens & doc_tokens) / len(query_tokens)
+        if background_text:
+            background_tokens = set(keyword_tokens(background_text))
+            if background_tokens:
+                background_overlap = len(background_tokens & doc_tokens) / len(background_tokens)
+                overlap = overlap * 0.8 + background_overlap * 0.2
         law_bonus = 0.0
         article_bonus = 0.0
 

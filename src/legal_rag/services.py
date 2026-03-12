@@ -42,7 +42,7 @@ class LegalAssistantService:
         self.mini_retriever = mini_retriever
         self.router = router or AutoRouter()
         self.generator = generator or SimpleGenerator(config.runtime.ollama_model)
-        self.rewriter = rewriter or QueryRewriter()
+        self.rewriter = rewriter or QueryRewriter(config.runtime.ollama_model, enable_ollama=True)
 
     @classmethod
     def for_test(cls, mode: str = "auto", mini_available: bool = True) -> "LegalAssistantService":
@@ -101,6 +101,7 @@ class LegalAssistantService:
             hybrid_retriever=hybrid_retriever,
             mini_retriever=mini_retriever if mini_available else MiniRetriever.fake_for_test([]),
             generator=SimpleGenerator(config.runtime.ollama_model, enable_ollama=False),
+            rewriter=QueryRewriter(config.runtime.ollama_model, enable_ollama=False),
         )
         service.mini_available = mini_available
         return service

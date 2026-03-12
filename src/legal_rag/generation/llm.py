@@ -33,7 +33,7 @@ class SimpleGenerator:
                     options={"temperature": 0},
                 )
                 for chunk in response:
-                    text = chunk["message"]["content"].strip()
+                    text = chunk["message"]["content"]
                     if text:
                         yield text
                 return

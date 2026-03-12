@@ -1,9 +1,12 @@
 from pathlib import Path
 import sys
+from importlib.machinery import ModuleSpec
+from types import ModuleType
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import legal_rag.rewrite as rewrite_module
 from legal_rag.config import AppConfig, IndexConfig, RuntimeConfig
 from legal_rag.generation.llm import SimpleGenerator
 from legal_rag.rewrite import QueryRewriter
@@ -24,6 +27,13 @@ from legal_rag.types import (
 )
 
 
+def install_fake_ollama(monkeypatch, chat_impl) -> None:
+    fake_ollama = ModuleType("ollama")
+    fake_ollama.__spec__ = ModuleSpec("ollama", loader=None)
+    fake_ollama.chat = chat_impl
+    monkeypatch.setitem(sys.modules, "ollama", fake_ollama)
+
+
 def test_service_handles_hybrid_mode_with_shared_pipeline() -> None:
     service = LegalAssistantService.for_test(mode="hybrid")
     answer = service.handle_message("民法典1138条怎么规定")
@@ -34,15 +44,13 @@ def test_service_handles_hybrid_mode_with_shared_pipeline() -> None:
 
 
 def test_service_for_test_does_not_call_external_ollama(monkeypatch) -> None:
-    import ollama
-
     calls = {"count": 0}
 
     def fail_chat(**kwargs):
         calls["count"] += 1
         raise AssertionError("for_test should not call ollama")
 
-    monkeypatch.setattr(ollama, "chat", fail_chat)
+    install_fake_ollama(monkeypatch, fail_chat)
 
     service = LegalAssistantService.for_test(mode="hybrid")
     answer = service.handle_message("口头遗嘱需要几个见证人")
@@ -90,9 +98,7 @@ def test_service_uses_configured_ollama_model_for_generation(monkeypatch, tmp_pa
         captured["model"] = model
         return {"message": {"content": "configured model ok"}}
 
-    import ollama
-
-    monkeypatch.setattr(ollama, "chat", fake_chat)
+    install_fake_ollama(monkeypatch, fake_chat)
 
     article = NormalizedArticle(
         canonical_id="民法典:1138",
@@ -122,6 +128,35 @@ def test_service_uses_configured_ollama_model_for_generation(monkeypatch, tmp_pa
 
     assert answer.answer_text == "configured model ok"
     assert captured["model"] == "qwen35-law:q6k-stable"
+
+
+def test_service_uses_configured_ollama_model_for_rewrite(tmp_path: Path) -> None:
+    article = NormalizedArticle(
+        canonical_id="民法典:1138",
+        law_name="中华人民共和国民法典",
+        law_aliases=["中华人民共和国民法典", "民法典"],
+        article_id_cn="第一千一百三十八条",
+        article_id_num="1138",
+        content="口头遗嘱应当有两个以上见证人在场见证。",
+        chapter=None,
+        section=None,
+        source="民法典.txt",
+        source_line=1,
+    )
+    config = AppConfig(
+        runtime=RuntimeConfig(mode="hybrid", ollama_model="qwen35-law:q6k-stable"),
+        index=IndexConfig(
+            laws_dir=tmp_path / "laws",
+            qdrant_path=tmp_path / "qdrant",
+            bm25_cache_path=tmp_path / "bm25",
+            mini_working_dir=tmp_path / "mini",
+            corpus_dir=tmp_path / "corpus",
+        ),
+    )
+
+    service = LegalAssistantService.from_config(config, articles=[article])
+
+    assert service.rewriter.model_name == "qwen35-law:q6k-stable"
 
 
 def test_conversation_state_keeps_recent_turns() -> None:
@@ -154,7 +189,7 @@ def test_conversation_state_keeps_recent_turns() -> None:
     assert [turn.raw_query for turn in state.turns] == ["q2", "q3"]
 
 
-def test_rewrite_expands_follow_up_query_with_recent_context() -> None:
+def test_rewrite_keeps_original_query_when_ollama_is_disabled() -> None:
     state = ConversationState(
         turns=[
             ConversationTurn(
@@ -166,18 +201,121 @@ def test_rewrite_expands_follow_up_query_with_recent_context() -> None:
         ]
     )
 
-    result = QueryRewriter().rewrite("他侄子能继承吗", state)
+    result = QueryRewriter(enable_ollama=False).rewrite("他侄子能继承吗", state)
 
     assert result.original_query == "他侄子能继承吗"
-    assert "老王" in result.rewritten_query
-    assert "继承" in result.rewritten_query
+    assert result.rewritten_query == "他侄子能继承吗"
+    assert "llm_unavailable" in result.rewrite_notes
+    assert "unchanged" in result.rewrite_notes
 
 
 def test_rewrite_runs_even_when_query_stays_the_same() -> None:
-    result = QueryRewriter().rewrite("民法典第一条是什么", ConversationState())
+    result = QueryRewriter(enable_ollama=False).rewrite("民法典第一条是什么", ConversationState())
 
     assert result.original_query == "民法典第一条是什么"
     assert result.rewritten_query == "民法典第一条是什么"
+    assert "unchanged" in result.rewrite_notes
+
+
+def test_rewrite_keeps_original_query_when_history_exists_but_ollama_is_disabled() -> None:
+    state = ConversationState(
+        turns=[
+            ConversationTurn(
+                raw_query="老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                rewritten_query="老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                answer_summary="无人继承又无受遗赠的遗产，归国家用于公益事业。",
+                citations=["中华人民共和国民法典:第一千一百六十条"],
+            )
+        ]
+    )
+
+    result = QueryRewriter(enable_ollama=False).rewrite("如果没有遗嘱呢", state)
+
+    assert result.original_query == "如果没有遗嘱呢"
+    assert result.rewritten_query == "如果没有遗嘱呢"
+    assert "llm_unavailable" in result.rewrite_notes
+    assert "unchanged" in result.rewrite_notes
+
+
+def test_rewrite_prefers_llm_with_recent_window_and_answer_summaries(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_chat(*, model, messages, stream, options):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["stream"] = stream
+        return {"message": {"content": "老王去世且没有遗嘱时，侄子能否继承遗产？"}}
+
+    fake_importlib = type(
+        "FakeImportlib",
+        (),
+        {"util": type("FakeUtil", (), {"find_spec": staticmethod(lambda name: object())})},
+    )
+    monkeypatch.setattr(rewrite_module, "importlib", fake_importlib, raising=False)
+    install_fake_ollama(monkeypatch, fake_chat)
+
+    state = ConversationState(
+        turns=[
+            ConversationTurn(
+                raw_query="老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                rewritten_query="老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                answer_summary="无人继承又无受遗赠的遗产，归国家用于公益事业。",
+                citations=["中华人民共和国民法典:第一千一百六十条"],
+            ),
+            ConversationTurn(
+                raw_query="如果侄子主张继承呢？",
+                rewritten_query="老王去世后如果侄子主张继承，应如何认定？",
+                answer_summary="侄子通常不属于法定继承第一顺位或第二顺位。",
+                citations=["中华人民共和国民法典:第一千一百二十七条"],
+            ),
+        ],
+        max_turns=4,
+    )
+
+    result = QueryRewriter(model_name="rewrite-model").rewrite("如果没有遗嘱呢", state)
+
+    assert result.rewritten_query == "老王去世且没有遗嘱时，侄子能否继承遗产？"
+    assert "llm_rewritten" in result.rewrite_notes
+    assert captured["model"] == "rewrite-model"
+    assert captured["stream"] is False
+    system_prompt = captured["messages"][0]["content"]
+    prompt = captured["messages"][1]["content"]
+    assert "不得补充历史中未出现的新事实" in system_prompt
+    assert "老王去世后留下遗产" in prompt
+    assert "侄子通常不属于法定继承第一顺位或第二顺位" in prompt
+    assert "如果没有遗嘱呢" in prompt
+    assert "第2轮检索问题" not in prompt
+    assert "引用法条" not in prompt
+    assert "中华人民共和国民法典:第一千一百二十七条" not in prompt
+
+
+def test_rewrite_keeps_original_query_when_llm_errors(monkeypatch) -> None:
+    def fail_chat(**kwargs):
+        raise RuntimeError("rewrite backend failed")
+
+    fake_importlib = type(
+        "FakeImportlib",
+        (),
+        {"util": type("FakeUtil", (), {"find_spec": staticmethod(lambda name: object())})},
+    )
+    monkeypatch.setattr(rewrite_module, "importlib", fake_importlib, raising=False)
+    install_fake_ollama(monkeypatch, fail_chat)
+
+    state = ConversationState(
+        turns=[
+            ConversationTurn(
+                raw_query="个体户老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                rewritten_query="个体户老王去世后留下遗产，无人继承或受遗赠，这些遗产归谁？",
+                answer_summary="无人继承又无受遗赠的遗产，归国家用于公益事业；特定情形下归集体所有。",
+                citations=["中华人民共和国民法典:第一千一百六十条"],
+            )
+        ]
+    )
+
+    result = QueryRewriter(model_name="rewrite-model").rewrite("他侄子能继承吗", state)
+
+    assert result.rewritten_query == "他侄子能继承吗"
+    assert "llm_error" in result.rewrite_notes
     assert "unchanged" in result.rewrite_notes
 
 
@@ -373,14 +511,62 @@ def test_stream_generate_falls_back_when_streaming_backend_errors(monkeypatch) -
     def fail_chat(**kwargs):
         raise RuntimeError("stream failed")
 
-    import ollama
-
-    monkeypatch.setattr(ollama, "chat", fail_chat)
+    install_fake_ollama(monkeypatch, fail_chat)
 
     generator = SimpleGenerator(enable_ollama=True)
     chunks = list(generator.stream_generate(context))
 
     assert "".join(chunks) == generator.generate(context).answer_text
+
+
+def test_stream_generate_preserves_newline_only_chunks_from_ollama(monkeypatch) -> None:
+    context = AnswerContext(
+        question="口头遗嘱需要几个见证人",
+        docs=[
+            RetrievedDoc(
+                canonical_id="中华人民共和国民法典:第一千一百三十八条",
+                content="口头遗嘱应当有两个以上见证人在场见证。",
+                metadata={
+                    "law_name": "中华人民共和国民法典",
+                    "article_id_cn": "第一千一百三十八条",
+                },
+                score=1.0,
+                score_breakdown={"exact_match": 1.0},
+                retriever="exact_match",
+            )
+        ],
+        route_decision=RouteDecision(
+            selected_mode="hybrid",
+            fallback_triggered=False,
+            confidence=1.0,
+            merge_policy="hybrid_plus_exact",
+            reasons=["exact_match"],
+        ),
+        citations=["中华人民共和国民法典:第一千一百三十八条"],
+        source_summary={"doc_count": 1},
+    )
+
+    import legal_rag.generation.llm as llm_module
+
+    monkeypatch.setattr(llm_module.importlib.util, "find_spec", lambda name: object())
+
+    def fake_stream_chat(**kwargs):
+        return iter(
+            [
+                {"message": {"content": "第一段"}},
+                {"message": {"content": "\n"}},
+                {"message": {"content": "\n"}},
+                {"message": {"content": "第二段"}},
+            ]
+        )
+
+    install_fake_ollama(monkeypatch, fake_stream_chat)
+
+    generator = SimpleGenerator(enable_ollama=True)
+    chunks = list(generator.stream_generate(context))
+
+    assert chunks == ["第一段", "\n", "\n", "第二段"]
+    assert "".join(chunks) == "第一段\n\n第二段"
 
 
 def test_follow_up_query_uses_previous_inheritance_context() -> None:
@@ -410,12 +596,21 @@ def test_follow_up_query_uses_previous_inheritance_context() -> None:
             source_line=1,
         ),
     ]
+    class FixedRewriter:
+        def rewrite(self, raw_query: str, state: ConversationState | None = None) -> RewriteResult:
+            return RewriteResult(
+                original_query=raw_query,
+                rewritten_query="老王去世后留下遗产且没有遗嘱时，侄子能否继承遗产？",
+                rewrite_notes=["llm_rewritten"],
+            )
+
     service = LegalAssistantService(
         config=AppConfig(runtime=RuntimeConfig(mode="hybrid")),
         exact_retriever=ExactMatchRetriever(articles),
         hybrid_retriever=HybridRetriever.from_articles(articles),
         mini_retriever=MiniRetriever.fake_for_test([]),
         generator=SimpleGenerator(enable_ollama=False),
+        rewriter=FixedRewriter(),
     )
     service.mini_available = False
 
@@ -433,5 +628,5 @@ def test_follow_up_query_uses_previous_inheritance_context() -> None:
     answer = service.handle_message("他侄子能继承吗", conversation_state=state)
 
     assert answer.rewrite_result is not None
-    assert "老王" in answer.rewrite_result.rewritten_query
+    assert answer.rewrite_result.rewritten_query == "老王去世后留下遗产且没有遗嘱时，侄子能否继承遗产？"
     assert answer.context.citations[0] == "中华人民共和国民法典:第一千一百二十七条"
