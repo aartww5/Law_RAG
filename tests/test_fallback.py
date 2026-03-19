@@ -41,13 +41,13 @@ def test_auto_disables_mini_fallback_when_mini_is_unavailable() -> None:
                         "article_id_cn": article.article_id_cn,
                         "article_id_num": article.article_id_num,
                     },
-                    "score": 0.20,
+                    "score": 0.014,
                 },
                 {
                     "canonical_id": "other:1",
                     "content": "其他法条",
                     "metadata": {"law_name": "其他法律", "article_id_num": "1"},
-                    "score": 0.19,
+                    "score": 0.013,
                 },
             ]
         ),
@@ -98,13 +98,13 @@ def test_auto_degrades_to_hybrid_when_mini_returns_runtime_error() -> None:
                         "article_id_cn": article.article_id_cn,
                         "article_id_num": article.article_id_num,
                     },
-                    "score": 0.20,
+                    "score": 0.014,
                 },
                 {
                     "canonical_id": "other:1",
                     "content": "\u5176\u4ed6\u6cd5\u6761",
                     "metadata": {"law_name": "\u5176\u4ed6\u6cd5\u5f8b", "article_id_num": "1"},
-                    "score": 0.19,
+                    "score": 0.013,
                 },
             ]
         ),
@@ -118,3 +118,4 @@ def test_auto_degrades_to_hybrid_when_mini_returns_runtime_error() -> None:
     assert answer.route_decision.selected_mode == "hybrid"
     assert "mini_failed" in answer.route_decision.reasons
     assert answer.context.citations
+

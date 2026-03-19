@@ -2,7 +2,7 @@ from legal_rag.types import RetrievalResult, RouteDecision
 
 
 class AutoRouter:
-    def __init__(self, min_confidence: float = 0.35, min_margin: float = 0.0) -> None:
+    def __init__(self, min_confidence: float = 0.015, min_margin: float = 0.0) -> None:
         self.min_confidence = min_confidence
         self.min_margin = min_margin
 
@@ -34,3 +34,4 @@ class AutoRouter:
             merge_policy="mini_only",
             reasons=["low_hybrid_confidence"],
         )
+

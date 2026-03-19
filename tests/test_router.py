@@ -57,7 +57,7 @@ def test_router_prefers_hybrid_when_top1_is_clear_enough() -> None:
     assert decision.fallback_triggered is False
 
 
-def test_router_prefers_hybrid_when_confidence_is_usable_even_without_margin() -> None:
+def test_router_prefers_hybrid_when_rrf_score_is_low_but_usable() -> None:
     router_module = importlib.import_module("legal_rag.router.auto")
     types_module = importlib.import_module("legal_rag.types")
 
@@ -68,13 +68,36 @@ def test_router_prefers_hybrid_when_confidence_is_usable_even_without_margin() -
     exact = RetrievalResult(docs=[], confidence=0.0, latency_ms=0.0, reasons=[], raw_signals={})
     hybrid = RetrievalResult(
         docs=[],
-        confidence=0.41,
+        confidence=0.02,
         latency_ms=0.0,
         reasons=["hybrid_rrf"],
-        raw_signals={"top1_score": 0.41, "top2_score": 0.40},
+        raw_signals={"top1_score": 0.02, "top2_score": 0.018},
     )
 
     decision = router.decide(exact_result=exact, hybrid_result=hybrid)
 
     assert decision.selected_mode == "hybrid"
     assert decision.fallback_triggered is False
+
+
+def test_router_falls_back_to_mini_when_rrf_score_is_clearly_weak() -> None:
+    router_module = importlib.import_module("legal_rag.router.auto")
+    types_module = importlib.import_module("legal_rag.types")
+
+    AutoRouter = router_module.AutoRouter
+    RetrievalResult = types_module.RetrievalResult
+
+    router = AutoRouter()
+    exact = RetrievalResult(docs=[], confidence=0.0, latency_ms=0.0, reasons=[], raw_signals={})
+    hybrid = RetrievalResult(
+        docs=[],
+        confidence=0.014,
+        latency_ms=0.0,
+        reasons=["hybrid_rrf"],
+        raw_signals={"top1_score": 0.014, "top2_score": 0.013},
+    )
+
+    decision = router.decide(exact_result=exact, hybrid_result=hybrid)
+
+    assert decision.selected_mode == "mini"
+    assert decision.fallback_triggered is True

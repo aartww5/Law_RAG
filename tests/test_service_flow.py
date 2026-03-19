@@ -44,6 +44,54 @@ def test_auto_mode_keeps_hybrid_when_confidence_is_usable() -> None:
     assert answer.route_decision.fallback_triggered is False
 
 
+def test_auto_mode_keeps_hybrid_for_usable_rrf_scale_score() -> None:
+    article = NormalizedArticle(
+        canonical_id="law:1138",
+        law_name="中华人民共和国民法典",
+        law_aliases=["中华人民共和国民法典", "民法典"],
+        article_id_cn="第一千一百三十八条",
+        article_id_num="1138",
+        content="口头遗嘱应当有两个以上见证人在场见证。",
+        chapter=None,
+        section=None,
+        source="civil_code.txt",
+        source_line=1,
+    )
+
+    service = LegalAssistantService(
+        config=AppConfig(runtime=RuntimeConfig(mode="auto")),
+        exact_retriever=ExactMatchRetriever([]),
+        hybrid_retriever=HybridRetriever.fake_for_test(
+            [
+                {
+                    "canonical_id": article.canonical_id,
+                    "content": article.content,
+                    "metadata": {
+                        "law_name": article.law_name,
+                        "law_aliases": article.law_aliases,
+                        "article_id_cn": article.article_id_cn,
+                        "article_id_num": article.article_id_num,
+                    },
+                    "score": 0.02,
+                },
+                {
+                    "canonical_id": "other:1",
+                    "content": "其他法条",
+                    "metadata": {"law_name": "其他法律", "article_id_num": "1"},
+                    "score": 0.018,
+                },
+            ]
+        ),
+        mini_retriever=MiniRetriever.fake_for_test([]),
+        generator=SimpleGenerator(enable_ollama=False),
+    )
+
+    answer = service.handle_message("口头遗嘱需要几个人见证")
+
+    assert answer.route_decision.selected_mode == "hybrid"
+    assert answer.route_decision.fallback_triggered is False
+
+
 def test_service_handles_hybrid_mode_with_shared_pipeline() -> None:
     service = LegalAssistantService.for_test(mode="hybrid")
     answer = service.handle_message("民法典1138条怎么规定")
@@ -438,10 +486,10 @@ def test_service_uses_rewritten_query_for_all_retrievers() -> None:
     )
     low_confidence_hybrid = RetrievalResult(
         docs=[],
-        confidence=0.3,
+        confidence=0.014,
         latency_ms=0.0,
         reasons=["low_hybrid_confidence"],
-        raw_signals={"top1_score": 0.3, "top2_score": 0.25},
+        raw_signals={"top1_score": 0.014, "top2_score": 0.013},
     )
     mini_result = RetrievalResult(
         docs=[doc],
@@ -695,3 +743,5 @@ def test_follow_up_query_uses_previous_inheritance_context() -> None:
     assert answer.rewrite_result is not None
     assert answer.rewrite_result.rewritten_query == "老王去世后留下遗产且没有遗嘱时，侄子能否继承遗产？"
     assert answer.context.citations[0] == "中华人民共和国民法典:第一千一百二十七条"
+
+

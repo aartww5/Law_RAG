@@ -1,8 +1,8 @@
 # Paths are resolved relative to the repository root.
 
 [runtime]
-mode = "mini"
-ollama_model = "qwen35-law:q6k-stable"
+mode = "auto"
+ollama_model = "qwen35_legal"
 streaming = true
 max_context_articles = 6
 max_history_turns = 4
