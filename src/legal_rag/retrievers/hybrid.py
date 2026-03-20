@@ -5,6 +5,8 @@ import logging
 from legal_rag.retrievers.backends import Bm25Backend, QdrantVectorBackend, weighted_rrf
 from legal_rag.retrievers.exact_match import extract_article_num
 from legal_rag.types import NormalizedArticle, RetrievedDoc, RetrievalResult
+from legal_rag.utils.query_expansion import QueryVariant, expand_query_variants
+from legal_rag.utils.reranking import compute_rerank_bonus
 from legal_rag.utils.text import keyword_tokens, split_structured_query
 
 
@@ -16,6 +18,7 @@ CURRENT_QUERY_WEIGHT = 1.0
 BACKGROUND_QUERY_WEIGHT = 0.2
 BM25_WEIGHT = 1.0
 VECTOR_WEIGHT = 1.0
+RERANK_WINDOW = 20
 
 
 class HybridRetriever:
@@ -112,13 +115,32 @@ class HybridRetriever:
         current_query, background_query = self._split_queries(question)
         rank_lists: list[tuple[list[tuple[str, float]], float]] = []
         reasons: list[str] = ["hybrid_rrf"]
+        query_variants = expand_query_variants(current_query)
+        if query_variants:
+            query_batches: list[tuple[QueryVariant, float]] = [
+                (variant, variant.weight * CURRENT_QUERY_WEIGHT) for variant in query_variants
+            ]
+        else:
+            query_batches = [(QueryVariant(text=current_query, weight=1.0, source="original"), CURRENT_QUERY_WEIGHT)]
 
-        for query_text, query_weight in (
-            (current_query, CURRENT_QUERY_WEIGHT),
-            (background_query, BACKGROUND_QUERY_WEIGHT),
-        ):
+        if background_query:
+            query_batches.append(
+                (
+                    QueryVariant(
+                        text=background_query,
+                        weight=BACKGROUND_QUERY_WEIGHT,
+                        source="background",
+                    ),
+                    BACKGROUND_QUERY_WEIGHT,
+                )
+            )
+
+        for variant, query_weight in query_batches:
+            query_text = variant.text
             if not query_text:
                 continue
+            if variant.source not in {"original", "background"} and "query_expansion" not in reasons:
+                reasons.append("query_expansion")
             if self._bm25_backend is not None:
                 bm25_ranked = self._bm25_backend.retrieve(query_text)
                 if bm25_ranked:
@@ -143,12 +165,25 @@ class HybridRetriever:
             )
 
         ranked_items = []
-        for canonical_id, rrf_score in fused_scores.items():
+        ranked_by_rrf = sorted(fused_scores.items(), key=lambda item: item[1], reverse=True)
+        rerank_ids = {canonical_id for canonical_id, _score in ranked_by_rrf[:RERANK_WINDOW]}
+        rerank_applied = False
+        for canonical_id, rrf_score in ranked_by_rrf:
             item = self._doc_by_id.get(canonical_id)
             if item is None:
                 continue
             law_bonus, article_bonus = self._lexical_bonus(question, item.get("metadata", {}))
-            final_score = rrf_score + law_bonus + article_bonus
+            rerank_bonus = 0.0
+            rerank_breakdown = {"rerank": 0.0, "generic_penalty": 0.0}
+            if canonical_id in rerank_ids:
+                rerank_bonus, rerank_breakdown = compute_rerank_bonus(
+                    question,
+                    content=item["content"],
+                    metadata=item.get("metadata", {}),
+                    query_variants=query_variants,
+                )
+                rerank_applied = rerank_applied or rerank_bonus != 0.0 or rerank_breakdown["generic_penalty"] != 0.0
+            final_score = rrf_score + law_bonus + article_bonus + rerank_bonus
             ranked_items.append(
                 {
                     **item,
@@ -157,11 +192,15 @@ class HybridRetriever:
                         "rrf": rrf_score,
                         "law_bonus": law_bonus,
                         "article_bonus": article_bonus,
+                        "rerank": rerank_breakdown["rerank"],
+                        "generic_penalty": rerank_breakdown["generic_penalty"],
                     },
                 }
             )
 
         ranked = sorted(ranked_items, key=lambda item: item["score"], reverse=True)
+        if rerank_applied and "legal_rerank" not in reasons:
+            reasons.append("legal_rerank")
         docs = [
             RetrievedDoc(
                 canonical_id=item["canonical_id"],
@@ -182,6 +221,7 @@ class HybridRetriever:
                 "candidate_count": len(docs),
                 "top1_score": docs[0].score if docs else 0.0,
                 "top2_score": docs[1].score if len(docs) > 1 else 0.0,
+                "query_variant_count": len(query_batches),
             },
         )
 
