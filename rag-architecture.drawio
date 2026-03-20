@@ -1,0 +1,98 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+    
+    <!-- Header / Title -->
+    <mxCell id="title" value="统一法律 RAG 多层次检索架构" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1" vertex="1" parent="1">
+      <mxGeometry x="300" y="20" width="300" height="30" as="geometry" />
+    </mxCell>
+
+    <!-- User Input -->
+    <mxCell id="user_input" value="用户输入 (User Query)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="390" y="80" width="120" height="40" as="geometry" />
+    </mxCell>
+
+    <!-- Query Rewriter -->
+    <mxCell id="rewriter" value="查询重写 (Query Rewriter)&#xa;[结合多轮对话上下文]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="365" y="150" width="170" height="50" as="geometry" />
+    </mxCell>
+    <mxCell id="e1" edge="1" parent="1" source="user_input" target="rewriter" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Router -->
+    <mxCell id="router" value="动态路由 (AutoRouter)&#xa;[阈值决策: 0.35]" style="rhombus;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="360" y="230" width="180" height="80" as="geometry" />
+    </mxCell>
+    <mxCell id="e2" edge="1" parent="1" source="rewriter" target="router" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Level 1: Exact Match -->
+    <mxCell id="exact_path" value="第一层: 精确法条匹配&#xa;(Exact Match)&#xa;[法名 + 条号正则]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="150" y="340" width="140" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="e3" value="命中法条" style="edgeStyle=orthogonalEdgeStyle;rounded=1;exitX=0;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="router" target="exact_path">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="20" y="-10" as="offset" />
+      </mxGeometry>
+    </mxCell>
+
+    <!-- Level 2: Hybrid Retrieval -->
+    <mxCell id="hybrid_path" value="第二层: Hybrid 混合检索&#xa;(Vector + BM25)&#xa;[RRF 融合 + 语义加分]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="380" y="340" width="140" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="e4" value="置信度 ≥ 0.35" style="edgeStyle=orthogonalEdgeStyle;rounded=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" parent="1" source="router" target="hybrid_path">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Level 3: MiniRAG -->
+    <mxCell id="mini_path" value="第三层: MiniRAG 图检索&#xa;(Graph Retrieval)&#xa;[复杂语义/长程关联]" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+      <mxGeometry x="610" y="340" width="140" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="e5" value="低置信度回退" style="edgeStyle=orthogonalEdgeStyle;rounded=1;exitX=1;exitY=0.5;entryX=0.5;entryY=0;" edge="1" parent="1" source="router" target="mini_path">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="-20" y="10" as="offset" />
+      </mxGeometry>
+    </mxCell>
+
+    <!-- Collaboration / Merge -->
+    <mxCell id="merger" value="上下文组装 (Context Builder)&#xa;[去重、排序、引用生成]" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+      <mxGeometry x="340" y="460" width="220" height="50" as="geometry" />
+    </mxCell>
+
+    <!-- Merge Edges -->
+    <mxCell id="e6" edge="1" parent="1" source="exact_path" target="merger" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e7" edge="1" parent="1" source="hybrid_path" target="merger" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="e8" edge="1" parent="1" source="mini_path" target="merger" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- LLM Generation -->
+    <mxCell id="llm" value="大语言模型 (LLM)&#xa;[角色扮演、流式生成]" style="ellipse;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontColor=#333333;" vertex="1" parent="1">
+      <mxGeometry x="400" y="550" width="100" height="70" as="geometry" />
+    </mxCell>
+    <mxCell id="e9" edge="1" parent="1" source="merger" target="llm" style="edgeStyle=orthogonalEdgeStyle;rounded=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Final Answer -->
+    <mxCell id="final_answer" value="最终法律回复" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+      <mxGeometry x="410" y="630" width="80" height="20" as="geometry" />
+    </mxCell>
+    <mxCell id="e10" edge="1" parent="1" source="llm" target="final_answer" style="edgeStyle=orthogonalEdgeStyle;rounded=1;dashed=1;">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Annotation Box -->
+    <mxCell id="anno" value="协同说明:&#xa;1. Exact 命中会作为强信号引入 Hybrid 路径合并。&#xa;2. Hybrid 低于阈值时激活 MiniRAG 深度搜索。&#xa;3. Context Builder 确保多路结果在 6 条上限内最优分配。" style="text;html=1;strokeColor=#c0c0c0;fillColor=#ffffff;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=10;spacing=5" vertex="1" parent="1">
+      <mxGeometry x="50" y="520" width="220" height="80" as="geometry" />
+    </mxCell>
+
+  </root>
+</mxGraphModel>

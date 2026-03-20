@@ -1,0 +1,101 @@
+<mxGraphModel>
+  <root>
+    <mxCell id="0" />
+    <mxCell id="1" parent="0" />
+
+    <!-- Participants (Actors & Objects) -->
+    <mxCell id="p1" value="用户 (User)" style="shape=umlActor;verticalLabelPosition=bottom;verticalAlign=top;html=1;outlineConnect=0;" vertex="1" parent="1">
+      <mxGeometry x="50" y="80" width="30" height="60" as="geometry" />
+    </mxCell>
+    <mxCell id="p2" value="Chainlit UI&#xa;(app.py)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+      <mxGeometry x="140" y="80" width="100" height="40" as="geometry" />
+    </mxCell>
+    <mxCell id="p3" value="LegalService&#xa;(services.py)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+      <mxGeometry x="290" y="80" width="100" height="40" as="geometry" />
+    </mxCell>
+    <mxCell id="p4" value="Rewriter&#xa;(rewrite.py)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="430" y="80" width="100" height="40" as="geometry" />
+    </mxCell>
+    <mxCell id="p5" value="Retrievers / Router" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+      <mxGeometry x="570" y="80" width="130" height="40" as="geometry" />
+    </mxCell>
+    <mxCell id="p6" value="Generator / Ollama" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+      <mxGeometry x="750" y="80" width="130" height="40" as="geometry" />
+    </mxCell>
+
+    <!-- Lifelines -->
+    <mxCell id="l1" value="" style="endArrow=none;dashed=1;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f1" target="p2">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="l2" value="" style="endArrow=none;dashed=1;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f2" target="p3">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="l3" value="" style="endArrow=none;dashed=1;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f3" target="p4">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="l4" value="" style="endArrow=none;dashed=1;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f4" target="p5">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="l5" value="" style="endArrow=none;dashed=1;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="f5" target="p6">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Fragments (Focus of Control) -->
+    <mxCell id="f1" value="" style="html=1;points=[];perimeter=orthogonalPerimeter;" vertex="1" parent="1">
+      <mxGeometry x="185" y="140" width="10" height="460" as="geometry" />
+    </mxCell>
+    <mxCell id="f2" value="" style="html=1;points=[];perimeter=orthogonalPerimeter;" vertex="1" parent="1">
+      <mxGeometry x="335" y="140" width="10" height="300" as="geometry" />
+    </mxCell>
+    <mxCell id="f3" value="" style="html=1;points=[];perimeter=orthogonalPerimeter;" vertex="1" parent="1">
+      <mxGeometry x="475" y="160" width="10" height="40" as="geometry" />
+    </mxCell>
+    <mxCell id="f4" value="" style="html=1;points=[];perimeter=orthogonalPerimeter;" vertex="1" parent="1">
+      <mxGeometry x="630" y="230" width="10" height="150" as="geometry" />
+    </mxCell>
+    <mxCell id="f5" value="" style="html=1;points=[];perimeter=orthogonalPerimeter;" vertex="1" parent="1">
+      <mxGeometry x="810" y="470" width="10" height="100" as="geometry" />
+    </mxCell>
+
+    <!-- Sequence Arrows -->
+    <mxCell id="s1" value="1. 输入法律问题" style="html=1;verticalAlign=bottom;endArrow=block;entryX=0;entryY=0;" edge="1" parent="1" source="p1" target="f1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s2" value="2. prepare_answer(query)" style="html=1;verticalAlign=bottom;endArrow=block;entryX=0;entryY=0;" edge="1" parent="1" source="f1" target="f2">
+      <mxGeometry relative="1" as="geometry">
+        <mxPoint x="20" y="0" as="offset" />
+      </mxGeometry>
+    </mxCell>
+    <mxCell id="s3" value="3. rewrite(query, history)" style="html=1;verticalAlign=bottom;endArrow=block;entryX=0;entryY=0;" edge="1" parent="1" source="f2" target="f3">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s4" value="RewriteResult" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;endSize=8;exitX=0;exitY=1;" edge="1" parent="1" source="f3" target="f2">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s5" value="4. retrieve &amp; decide" style="html=1;verticalAlign=bottom;endArrow=block;entryX=0;entryY=0;" edge="1" parent="1" source="f2" target="f4">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s6" value="Context &amp; Decision" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;endSize=8;exitX=0;exitY=1;" edge="1" parent="1" source="f4" target="f2">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s7" value="PreparedAnswer" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;endSize=8;exitX=0;exitY=1;" edge="1" parent="1" source="f2" target="f1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    
+    <mxCell id="s8" value="5. stream_answer(context)" style="html=1;verticalAlign=bottom;endArrow=block;entryX=0;entryY=0;" edge="1" parent="1" source="f1" target="f5">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s9" value="6. 流式块 (包含 &lt;think&gt;)" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;endSize=8;exitX=0;exitY=0.5;" edge="1" parent="1" source="f5" target="f1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+    <mxCell id="s10" value="7. 渲染思考过程/答案" style="html=1;verticalAlign=bottom;endArrow=open;dashed=1;endSize=8;exitX=0;exitY=0.9;" edge="1" parent="1" source="f1" target="p1">
+      <mxGeometry relative="1" as="geometry" />
+    </mxCell>
+
+    <!-- Annotation / Step Explanation -->
+    <mxCell id="anno" value="关键节点说明:&#xa;- Rewriter 会参考 ConversationState 进行自包含改写。&#xa;- Router 在 0.35 阈值下决定使用 Hybrid 或回退 Mini。&#xa;- app.py 在处理流式块时会实时切换 UI 的 'Thinking' 状态。" style="text;html=1;strokeColor=#c0c0c0;fillColor=#ffffff;align=left;verticalAlign=top;whiteSpace=wrap;rounded=1;fontSize=10;spacing=5" vertex="1" parent="1">
+      <mxGeometry x="500" y="480" width="240" height="70" as="geometry" />
+    </mxCell>
+
+  </root>
+</mxGraphModel>
