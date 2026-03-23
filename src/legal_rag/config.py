@@ -5,6 +5,8 @@ import tomllib
 
 
 DEFAULT_OLLAMA_MODEL = "qwen35-law:q6k-stable"
+DEFAULT_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+DEFAULT_RERANK_TOP_K = 20
 CONFIG_FILE_NAME = "config.toml"
 
 
@@ -24,6 +26,8 @@ class IndexConfig:
     qdrant_collection_name: str = "chinese_laws_article_based"
     bm25_cache_path: Path = Path("unified_app/storage/bm25")
     embedding_model: str = "BAAI/bge-m3"
+    reranker_model: str = DEFAULT_RERANKER_MODEL
+    rerank_top_k: int = DEFAULT_RERANK_TOP_K
     mini_working_dir: Path = Path("unified_app/storage/minirag_working")
     corpus_dir: Path = Path("unified_app/storage/corpus")
 
@@ -98,6 +102,8 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
     )
     bm25_cache_path = _resolve_path(index_data.get("bm25_cache_path"), root, defaults.bm25_cache_path)
     embedding_model = str(index_data.get("embedding_model", defaults.embedding_model)).strip() or defaults.embedding_model
+    reranker_model = str(index_data.get("reranker_model", defaults.reranker_model)).strip() or defaults.reranker_model
+    rerank_top_k = _parse_int(index_data.get("rerank_top_k", defaults.rerank_top_k), defaults.rerank_top_k)
     corpus_dir = _resolve_path(index_data.get("corpus_dir"), root, defaults.corpus_dir)
 
     mini_working_dir_value = index_data.get("mini_working_dir")
@@ -116,6 +122,10 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         bm25_cache_path = _resolve_path(os.environ["LEGAL_RAG_BM25_CACHE_PATH"], root, bm25_cache_path)
     if "LEGAL_RAG_EMBEDDING_MODEL" in os.environ:
         embedding_model = os.environ["LEGAL_RAG_EMBEDDING_MODEL"].strip() or embedding_model
+    if "LEGAL_RAG_RERANKER_MODEL" in os.environ:
+        reranker_model = os.environ["LEGAL_RAG_RERANKER_MODEL"].strip() or reranker_model
+    if "LEGAL_RAG_RERANK_TOP_K" in os.environ:
+        rerank_top_k = _parse_int(os.environ["LEGAL_RAG_RERANK_TOP_K"], rerank_top_k)
     if "LEGAL_RAG_CORPUS_DIR" in os.environ:
         corpus_dir = _resolve_path(os.environ["LEGAL_RAG_CORPUS_DIR"], root, corpus_dir)
     if "LEGAL_RAG_MINI_WORKING_DIR" in os.environ:
@@ -127,6 +137,8 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         qdrant_collection_name=qdrant_collection_name,
         bm25_cache_path=bm25_cache_path,
         embedding_model=embedding_model,
+        reranker_model=reranker_model,
+        rerank_top_k=rerank_top_k,
         mini_working_dir=mini_working_dir,
         corpus_dir=corpus_dir,
     )

@@ -1,10 +1,37 @@
 import importlib
 import importlib.util
+import os
 from pathlib import Path
 import sys
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+
+def test_app_config_reads_dedicated_reranker_settings_from_env() -> None:
+    config_module = importlib.import_module("legal_rag.config")
+    AppConfig = config_module.AppConfig
+
+    root = Path(__file__).resolve().parents[2]
+    previous_model = os.environ.get("LEGAL_RAG_RERANKER_MODEL")
+    previous_top_k = os.environ.get("LEGAL_RAG_RERANK_TOP_K")
+    os.environ["LEGAL_RAG_RERANKER_MODEL"] = "BAAI/bge-reranker-base"
+    os.environ["LEGAL_RAG_RERANK_TOP_K"] = "12"
+
+    try:
+        config = AppConfig.from_env(root)
+    finally:
+        if previous_model is None:
+            os.environ.pop("LEGAL_RAG_RERANKER_MODEL", None)
+        else:
+            os.environ["LEGAL_RAG_RERANKER_MODEL"] = previous_model
+        if previous_top_k is None:
+            os.environ.pop("LEGAL_RAG_RERANK_TOP_K", None)
+        else:
+            os.environ["LEGAL_RAG_RERANK_TOP_K"] = previous_top_k
+
+    assert config.index.reranker_model == "BAAI/bge-reranker-base"
+    assert config.index.rerank_top_k == 12
 
 
 def test_hybrid_retriever_returns_ranked_docs_from_shared_contract() -> None:
@@ -364,12 +391,12 @@ def test_hybrid_retriever_uses_query_expansion_to_surface_consumer_compensation_
 
     result = retriever.retrieve("买到假冒伪劣商品，可以要求几倍赔偿？")
 
-    assert result.docs[0].canonical_id == "consumer:55"
+    assert any(doc.canonical_id == "consumer:55" for doc in result.docs)
     assert any("惩罚性赔偿" in query for query in bm25_backend.queries)
     assert any("消费者权益保护法" in query for query in vector_backend.queries)
 
 
-def test_hybrid_retriever_reranks_task_execution_liability_above_generic_traffic_rule() -> None:
+def test_hybrid_retriever_uses_model_reranker_to_reorder_rrf_candidates() -> None:
     retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
     types_module = importlib.import_module("legal_rag.types")
 
@@ -379,11 +406,11 @@ def test_hybrid_retriever_reranks_task_execution_liability_above_generic_traffic
     articles = [
         NormalizedArticle(
             canonical_id="civil:1191",
-            law_name="中华人民共和国民法典",
-            law_aliases=["中华人民共和国民法典", "民法典"],
-            article_id_cn="第一千一百九十一条",
+            law_name="Civil Code",
+            law_aliases=["Civil Code"],
+            article_id_cn="Article 1191",
             article_id_num="1191",
-            content="用人单位的工作人员因执行工作任务造成他人损害的，由用人单位承担侵权责任。",
+            content="Employer is liable when a worker causes harm while performing assigned work.",
             chapter=None,
             section=None,
             source="civil.txt",
@@ -391,11 +418,11 @@ def test_hybrid_retriever_reranks_task_execution_liability_above_generic_traffic
         ),
         NormalizedArticle(
             canonical_id="traffic:76",
-            law_name="中华人民共和国道路交通安全法",
-            law_aliases=["中华人民共和国道路交通安全法", "道路交通安全法"],
-            article_id_cn="第七十六条",
+            law_name="Road Traffic Safety Law",
+            law_aliases=["Road Traffic Safety Law"],
+            article_id_cn="Article 76",
             article_id_num="76",
-            content="机动车发生交通事故造成人身伤亡、财产损失的，由保险公司先行赔付，不足部分按照过错承担赔偿责任。",
+            content="Traffic accident losses are handled first through insurance and then fault-based compensation.",
             chapter=None,
             section=None,
             source="traffic.txt",
@@ -411,14 +438,28 @@ def test_hybrid_retriever_reranks_task_execution_liability_above_generic_traffic
         def retrieve(self, question: str, *, limit: int = 20):
             return [("traffic:76", 0.92), ("civil:1191", 0.88)]
 
+    class FakeReranker:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list[str]]] = []
+
+        def score(self, question: str, docs: list[dict]) -> dict[str, float]:
+            self.calls.append((question, [doc["canonical_id"] for doc in docs]))
+            return {"traffic:76": 0.05, "civil:1191": 0.95}
+
+    reranker = FakeReranker()
     retriever = HybridRetriever.from_articles(
         articles,
         bm25_backend=FakeBm25Backend(),
         vector_backend=FakeVectorBackend(),
+        reranker=reranker,
         enable_backends=False,
     )
 
-    result = retriever.retrieve("外卖骑手送餐时撞伤行人，谁承担赔偿责任？")
+    result = retriever.retrieve("delivery rider injures pedestrian liability")
 
     assert result.docs[0].canonical_id == "civil:1191"
-    assert result.docs[0].score_breakdown["rerank"] > 0
+    assert result.docs[0].score_breakdown["model_rerank"] == 0.95
+    assert "rerank" not in result.docs[0].score_breakdown
+    assert "generic_penalty" not in result.docs[0].score_breakdown
+    assert "model_rerank" in result.reasons
+    assert reranker.calls[0][0] == "delivery rider injures pedestrian liability"
