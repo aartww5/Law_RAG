@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import logging
 
-from legal_rag.config import DEFAULT_RERANK_TOP_K
+from legal_rag.config import DEFAULT_BM25_TOP_K, DEFAULT_RERANK_TOP_K, DEFAULT_VECTOR_TOP_K
 from legal_rag.retrievers.backends import Bm25Backend, QdrantVectorBackend, weighted_rrf
 from legal_rag.retrievers.exact_match import extract_article_num
 from legal_rag.retrievers.reranker import CrossEncoderReranker, ModelReranker
 from legal_rag.types import NormalizedArticle, RetrievedDoc, RetrievalResult
-from legal_rag.utils.query_expansion import QueryVariant, expand_query_variants
+from legal_rag.utils.query_decomposition import QueryDecomposer, QueryVariant
 from legal_rag.utils.text import keyword_tokens, split_structured_query
 
 
@@ -29,6 +29,9 @@ class HybridRetriever:
         bm25_backend=None,
         vector_backend=None,
         reranker: ModelReranker | None = None,
+        decomposer: QueryDecomposer | None = None,
+        bm25_top_k: int = DEFAULT_BM25_TOP_K,
+        vector_top_k: int = DEFAULT_VECTOR_TOP_K,
         rerank_top_k: int = DEFAULT_RERANK_TOP_K,
     ) -> None:
         self._docs = docs or []
@@ -36,6 +39,9 @@ class HybridRetriever:
         self._bm25_backend = bm25_backend
         self._vector_backend = vector_backend
         self._reranker = reranker
+        self._decomposer = decomposer
+        self._bm25_top_k = max(bm25_top_k, 1)
+        self._vector_top_k = max(vector_top_k, 1)
         self._rerank_top_k = max(rerank_top_k, 0)
 
     @classmethod
@@ -51,6 +57,9 @@ class HybridRetriever:
         bm25_backend=None,
         vector_backend=None,
         reranker: ModelReranker | None = None,
+        decomposer: QueryDecomposer | None = None,
+        bm25_top_k: int | None = None,
+        vector_top_k: int | None = None,
         rerank_top_k: int | None = None,
         enable_backends: bool = True,
     ) -> "HybridRetriever":
@@ -82,16 +91,30 @@ class HybridRetriever:
                     storage_path=index_config.qdrant_path,
                     collection_name=index_config.qdrant_collection_name,
                     model_name=index_config.embedding_model,
+                    device=index_config.embedding_device,
                 )
             except Exception as exc:  # pragma: no cover - depends on local optional deps
                 LOGGER.warning("vector backend unavailable: %s", exc)
 
         if reranker is None and index_config is not None:
-            reranker = CrossEncoderReranker(model_name=index_config.reranker_model)
+            reranker = CrossEncoderReranker(
+                model_name=index_config.reranker_model,
+                device=index_config.reranker_device,
+            )
 
         effective_rerank_top_k = rerank_top_k
+        effective_bm25_top_k = bm25_top_k
+        effective_vector_top_k = vector_top_k
+        if effective_bm25_top_k is None and index_config is not None:
+            effective_bm25_top_k = index_config.bm25_top_k
+        if effective_vector_top_k is None and index_config is not None:
+            effective_vector_top_k = index_config.vector_top_k
         if effective_rerank_top_k is None and index_config is not None:
             effective_rerank_top_k = index_config.rerank_top_k
+        if effective_bm25_top_k is None:
+            effective_bm25_top_k = DEFAULT_BM25_TOP_K
+        if effective_vector_top_k is None:
+            effective_vector_top_k = DEFAULT_VECTOR_TOP_K
         if effective_rerank_top_k is None:
             effective_rerank_top_k = DEFAULT_RERANK_TOP_K
 
@@ -100,6 +123,9 @@ class HybridRetriever:
             bm25_backend=bm25_backend,
             vector_backend=vector_backend,
             reranker=reranker,
+            decomposer=decomposer,
+            bm25_top_k=effective_bm25_top_k,
+            vector_top_k=effective_vector_top_k,
             rerank_top_k=effective_rerank_top_k,
         )
 
@@ -132,40 +158,23 @@ class HybridRetriever:
         current_query, background_query = self._split_queries(question)
         rank_lists: list[tuple[list[tuple[str, float]], float]] = []
         reasons: list[str] = ["hybrid_rrf"]
-        query_variants = expand_query_variants(current_query)
-        if query_variants:
-            query_batches: list[tuple[QueryVariant, float]] = [
-                (variant, variant.weight * CURRENT_QUERY_WEIGHT) for variant in query_variants
-            ]
-        else:
-            query_batches = [(QueryVariant(text=current_query, weight=1.0, source="original"), CURRENT_QUERY_WEIGHT)]
-
-        if background_query:
-            query_batches.append(
-                (
-                    QueryVariant(
-                        text=background_query,
-                        weight=BACKGROUND_QUERY_WEIGHT,
-                        source="background",
-                    ),
-                    BACKGROUND_QUERY_WEIGHT,
-                )
-            )
+        query_batches = self._build_query_batches(current_query, background_query)
+        rerank_queries = [(variant.text, query_weight) for variant, query_weight in query_batches if variant.text]
 
         for variant, query_weight in query_batches:
             query_text = variant.text
             if not query_text:
                 continue
-            if variant.source not in {"original", "background"} and "query_expansion" not in reasons:
-                reasons.append("query_expansion")
+            if variant.source not in {"original", "background"} and "query_decomposition" not in reasons:
+                reasons.append("query_decomposition")
             if self._bm25_backend is not None:
-                bm25_ranked = self._bm25_backend.retrieve(query_text)
+                bm25_ranked = self._bm25_backend.retrieve(query_text, limit=self._bm25_top_k)
                 if bm25_ranked:
                     rank_lists.append((bm25_ranked, query_weight * BM25_WEIGHT))
                     if "bm25" not in reasons:
                         reasons.append("bm25")
             if self._vector_backend is not None:
-                vector_ranked = self._vector_backend.retrieve(query_text)
+                vector_ranked = self._vector_backend.retrieve(query_text, limit=self._vector_top_k)
                 if vector_ranked:
                     rank_lists.append((vector_ranked, query_weight * VECTOR_WEIGHT))
                     if "vector" not in reasons:
@@ -192,7 +201,7 @@ class HybridRetriever:
                     rerank_docs.append(item)
             if rerank_docs:
                 try:
-                    model_rerank_scores = self._reranker.score(current_query, rerank_docs)
+                    model_rerank_scores = self._reranker.score(rerank_queries, rerank_docs)
                 except Exception as exc:  # pragma: no cover - depends on local model runtime
                     LOGGER.warning("model reranker unavailable: %s", exc)
                 else:
@@ -241,9 +250,41 @@ class HybridRetriever:
                 "top1_score": docs[0].score if docs else 0.0,
                 "top2_score": docs[1].score if len(docs) > 1 else 0.0,
                 "query_variant_count": len(query_batches),
+                "rerank_query_count": len(rerank_queries),
                 "reranked_count": len(model_rerank_scores),
             },
         )
+
+    def _build_query_batches(self, current_query: str, background_query: str) -> list[tuple[QueryVariant, float]]:
+        if self._decomposer is not None:
+            query_variants = self._decomposer.decompose(current_query, background=background_query)
+        else:
+            query_variants = []
+        if query_variants:
+            query_batches: list[tuple[QueryVariant, float]] = [
+                (variant, variant.weight * CURRENT_QUERY_WEIGHT) for variant in query_variants
+            ]
+        else:
+            query_batches = [(QueryVariant(text=current_query, weight=1.0, source="original"), CURRENT_QUERY_WEIGHT)]
+
+        if background_query:
+            query_batches.append(
+                (
+                    QueryVariant(
+                        text=background_query,
+                        weight=BACKGROUND_QUERY_WEIGHT,
+                        source="background",
+                    ),
+                    BACKGROUND_QUERY_WEIGHT,
+                )
+            )
+        return query_batches
+
+    def close(self) -> None:
+        for component in (self._vector_backend, self._reranker):
+            close = getattr(component, "close", None)
+            if callable(close):
+                close()
 
     def _build_result_from_ranked_items(
         self,

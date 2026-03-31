@@ -4,15 +4,18 @@ import importlib.util
 import logging
 import re
 from pathlib import Path
+import threading
 import uuid
 
+from legal_rag.config import DEFAULT_BM25_TOP_K, DEFAULT_VECTOR_TOP_K
 from legal_rag.types import NormalizedArticle
+from legal_rag.utils.devices import resolve_torch_device
 from legal_rag.utils.text import normalize_question
 
 
 LOGGER = logging.getLogger(__name__)
-BM25_TOP_K = 20
-VECTOR_TOP_K = 20
+BM25_TOP_K = DEFAULT_BM25_TOP_K
+VECTOR_TOP_K = DEFAULT_VECTOR_TOP_K
 RRF_K = 60
 INDEX_BATCH_SIZE = 256
 
@@ -98,24 +101,35 @@ class Bm25Backend:
 
 
 class QdrantVectorBackend:
+    _shared_lock = threading.Lock()
+    _shared_clients: dict[str, dict[str, object]] = {}
+    _shared_models: dict[str, dict[str, object]] = {}
+
     def __init__(
         self,
         *,
         storage_path: Path,
         collection_name: str,
         model_name: str,
+        device: str,
         articles: list[NormalizedArticle],
     ) -> None:
         self.storage_path = storage_path
         self.collection_name = collection_name
         self.model_name = model_name
+        self.device = device
         self._articles = articles
         self._canonical_by_key = {
             (article.law_name, article.article_id_cn or ""): article.canonical_id for article in articles
         }
+        self._client_cache_key = str(self.storage_path.resolve())
+        self._resolved_device = resolve_torch_device(self.device)
+        self._model_cache_key = f"{self.model_name}::{self._resolved_device}"
         self._client = None
         self._model = None
         self._is_ready = False
+        self._has_shared_client_ref = False
+        self._has_shared_model_ref = False
 
     @classmethod
     def from_articles(
@@ -125,6 +139,7 @@ class QdrantVectorBackend:
         storage_path: str | Path,
         collection_name: str,
         model_name: str,
+        device: str = "auto",
     ) -> "QdrantVectorBackend":
         storage = Path(storage_path)
         storage.mkdir(parents=True, exist_ok=True)
@@ -132,6 +147,7 @@ class QdrantVectorBackend:
             storage_path=storage,
             collection_name=collection_name,
             model_name=model_name,
+            device=device,
             articles=articles,
         )
 
@@ -163,10 +179,15 @@ class QdrantVectorBackend:
 
         qdrant_client = _require_dependency("qdrant_client")
         sentence_transformers = _require_dependency("sentence_transformers")
-        self._client = qdrant_client.QdrantClient(path=str(self.storage_path))
-        self._model = sentence_transformers.SentenceTransformer(self.model_name, device="cpu")
-        self._ensure_collection()
-        self._is_ready = True
+        with self._shared_lock:
+            try:
+                self._client = self._acquire_shared_client(qdrant_client)
+                self._model = self._acquire_shared_model(sentence_transformers)
+                self._ensure_collection()
+            except Exception:
+                self._release_shared_resources()
+                raise
+            self._is_ready = True
 
     def _ensure_collection(self) -> None:
         if self._client.collection_exists(self.collection_name):
@@ -227,6 +248,78 @@ class QdrantVectorBackend:
         if law_name and article_id_cn:
             return self._canonical_by_key.get((str(law_name), str(article_id_cn)))
         return None
+
+    def close(self) -> None:
+        direct_close_client = not self._has_shared_client_ref
+        direct_close_model = not self._has_shared_model_ref
+        with self._shared_lock:
+            self._release_shared_resources()
+            if direct_close_client and self._client is not None:
+                close = getattr(self._client, "close", None)
+                if callable(close):
+                    close()
+            if direct_close_model and self._model is not None:
+                close = getattr(self._model, "close", None)
+                if callable(close):
+                    close()
+        self._client = None
+        self._model = None
+        self._is_ready = False
+        self._has_shared_client_ref = False
+        self._has_shared_model_ref = False
+
+    def _acquire_shared_client(self, qdrant_client):
+        entry = self._shared_clients.get(self._client_cache_key)
+        if entry is None:
+            entry = {
+                "resource": qdrant_client.QdrantClient(path=str(self.storage_path)),
+                "refcount": 0,
+            }
+            self._shared_clients[self._client_cache_key] = entry
+        entry["refcount"] = int(entry["refcount"]) + 1
+        self._has_shared_client_ref = True
+        return entry["resource"]
+
+    def _acquire_shared_model(self, sentence_transformers):
+        entry = self._shared_models.get(self._model_cache_key)
+        if entry is None:
+            entry = {
+                "resource": sentence_transformers.SentenceTransformer(self.model_name, device=self._resolved_device),
+                "refcount": 0,
+            }
+            self._shared_models[self._model_cache_key] = entry
+        entry["refcount"] = int(entry["refcount"]) + 1
+        self._has_shared_model_ref = True
+        return entry["resource"]
+
+    def _release_shared_resources(self) -> None:
+        if self._has_shared_client_ref:
+            self._release_shared_entry(self._shared_clients, self._client_cache_key)
+        if self._has_shared_model_ref:
+            self._release_shared_entry(self._shared_models, self._model_cache_key)
+
+    def _release_shared_entry(self, registry: dict[str, dict[str, object]], key: str) -> None:
+        entry = registry.get(key)
+        if entry is None:
+            return
+        refcount = max(int(entry["refcount"]) - 1, 0)
+        if refcount > 0:
+            entry["refcount"] = refcount
+            if registry is self._shared_clients:
+                self._has_shared_client_ref = False
+            else:
+                self._has_shared_model_ref = False
+            return
+
+        resource = entry.get("resource")
+        close = getattr(resource, "close", None)
+        if callable(close):
+            close()
+        registry.pop(key, None)
+        if registry is self._shared_clients:
+            self._has_shared_client_ref = False
+        else:
+            self._has_shared_model_ref = False
 
 
 def _require_dependency(module_name: str):
