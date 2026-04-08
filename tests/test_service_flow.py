@@ -290,10 +290,8 @@ def test_decomposer_requests_json_without_thinking(monkeypatch) -> None:
         return {
             "message": {
                 "content": (
-                    '{"queries":['
-                    '{"source":"issue","text":"紧急救助责任"},'
-                    '{"source":"statutory_phrase","text":"救助人不承担民事责任"}'
-                    ']}'
+                    '{"issues":["紧急救助责任"],'
+                    '"doctrines":["救助人不承担民事责任"]}'
                 )
             }
         }
@@ -316,8 +314,8 @@ def test_decomposer_requests_json_without_thinking(monkeypatch) -> None:
     variants = decomposer.decompose("小马救人造成儿童挫伤要赔偿吗")
 
     assert variants[0].source == "original"
-    assert variants[1].text == "紧急救助责任"
-    assert variants[2].text == "救助人不承担民事责任"
+    assert variants[1].text == "救助人不承担民事责任"
+    assert variants[2].text == "紧急救助责任"
     assert captured["stream"] is False
     assert captured["think"] is False
     assert captured["format"] == "json"
@@ -331,10 +329,8 @@ def test_decomposer_drops_english_variants_for_chinese_question(monkeypatch) -> 
         return {
             "message": {
                 "content": (
-                    '{"queries":['
-                    '{"source":"issue","text":"Is a rescuer liable for injuries during rescue?"},'
-                    '{"source":"statutory_phrase","text":"紧急救助 受助人损害 不承担民事责任"}'
-                    ']}'
+                    '{"issues":["Is a rescuer liable for injuries during rescue?"],'
+                    '"doctrines":["紧急救助 受助人损害 不承担民事责任"]}'
                 )
             }
         }
@@ -526,6 +522,61 @@ def test_rewrite_runs_even_when_query_stays_the_same() -> None:
 
     assert result.original_query == "民法典第一条是什么"
     assert result.rewritten_query == "民法典第一条是什么"
+    assert "unchanged" in result.rewrite_notes
+
+
+def test_rewrite_uses_llm_for_single_turn_query_when_enabled(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_chat(*, model, messages, stream, options):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["stream"] = stream
+        return {"message": {"content": "7岁儿童将手表卖给二手商店后，父母能否要求返还手表？"}}
+
+    fake_importlib = type(
+        "FakeImportlib",
+        (),
+        {"util": type("FakeUtil", (), {"find_spec": staticmethod(lambda name: object())})},
+    )
+    monkeypatch.setattr(rewrite_module, "importlib", fake_importlib, raising=False)
+    install_fake_ollama(monkeypatch, fake_chat)
+
+    result = QueryRewriter(model_name="rewrite-model").rewrite(
+        "小刘7岁时，将父亲送给他的一块手表卖给了二手商店，其父母能要求退回吗？",
+        ConversationState(),
+    )
+
+    assert result.rewritten_query == "7岁儿童将手表卖给二手商店后，父母能否要求返还手表？"
+    assert "llm_rewritten" in result.rewrite_notes
+    assert captured["model"] == "rewrite-model"
+    assert captured["stream"] is False
+    system_prompt = captured["messages"][0]["content"]
+    prompt = captured["messages"][1]["content"]
+    assert "单轮问题也要尽量转成更利于检索的事实表达" in system_prompt
+    assert "小刘7岁时" in prompt
+    assert "最近对话窗口" not in prompt
+
+
+def test_rewrite_bypasses_single_turn_llm_for_direct_statute_lookup(monkeypatch) -> None:
+    calls: list[object] = []
+
+    def fake_chat(**kwargs):
+        calls.append(kwargs)
+        return {"message": {"content": "不该被调用"}}
+
+    fake_importlib = type(
+        "FakeImportlib",
+        (),
+        {"util": type("FakeUtil", (), {"find_spec": staticmethod(lambda name: object())})},
+    )
+    monkeypatch.setattr(rewrite_module, "importlib", fake_importlib, raising=False)
+    install_fake_ollama(monkeypatch, fake_chat)
+
+    result = QueryRewriter(model_name="rewrite-model").rewrite("民法典第一百八十四条是什么？", ConversationState())
+
+    assert calls == []
+    assert result.rewritten_query == "民法典第一百八十四条是什么？"
     assert "unchanged" in result.rewrite_notes
 
 

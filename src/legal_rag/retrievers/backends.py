@@ -112,24 +112,30 @@ class QdrantVectorBackend:
         collection_name: str,
         model_name: str,
         device: str,
+        build_device: str,
         articles: list[NormalizedArticle],
     ) -> None:
         self.storage_path = storage_path
         self.collection_name = collection_name
         self.model_name = model_name
         self.device = device
+        self.build_device = build_device
         self._articles = articles
         self._canonical_by_key = {
             (article.law_name, article.article_id_cn or ""): article.canonical_id for article in articles
         }
         self._client_cache_key = str(self.storage_path.resolve())
-        self._resolved_device = resolve_torch_device(self.device)
-        self._model_cache_key = f"{self.model_name}::{self._resolved_device}"
+        self._resolved_query_device = resolve_torch_device(self.device)
+        self._resolved_build_device = resolve_torch_device(self.build_device)
+        self._query_model_cache_key = f"{self.model_name}::{self._resolved_query_device}"
+        self._build_model_cache_key = f"{self.model_name}::{self._resolved_build_device}"
         self._client = None
-        self._model = None
+        self._query_model = None
+        self._build_model = None
         self._is_ready = False
         self._has_shared_client_ref = False
-        self._has_shared_model_ref = False
+        self._has_shared_query_model_ref = False
+        self._has_shared_build_model_ref = False
 
     @classmethod
     def from_articles(
@@ -140,6 +146,7 @@ class QdrantVectorBackend:
         collection_name: str,
         model_name: str,
         device: str = "auto",
+        build_device: str | None = None,
     ) -> "QdrantVectorBackend":
         storage = Path(storage_path)
         storage.mkdir(parents=True, exist_ok=True)
@@ -148,6 +155,7 @@ class QdrantVectorBackend:
             collection_name=collection_name,
             model_name=model_name,
             device=device,
+            build_device=build_device or device,
             articles=articles,
         )
 
@@ -157,7 +165,7 @@ class QdrantVectorBackend:
             return []
 
         self._ensure_ready()
-        vector = self._model.encode(query, convert_to_numpy=True, normalize_embeddings=True).tolist()
+        vector = self._query_model.encode(query, convert_to_numpy=True, normalize_embeddings=True).tolist()
         response = self._client.query_points(
             collection_name=self.collection_name,
             query=vector,
@@ -182,7 +190,16 @@ class QdrantVectorBackend:
         with self._shared_lock:
             try:
                 self._client = self._acquire_shared_client(qdrant_client)
-                self._model = self._acquire_shared_model(sentence_transformers)
+                self._query_model = self._acquire_shared_model(
+                    sentence_transformers,
+                    cache_key=self._query_model_cache_key,
+                    device=self._resolved_query_device,
+                )
+                self._build_model = self._acquire_shared_model(
+                    sentence_transformers,
+                    cache_key=self._build_model_cache_key,
+                    device=self._resolved_build_device,
+                )
                 self._ensure_collection()
             except Exception:
                 self._release_shared_resources()
@@ -194,7 +211,7 @@ class QdrantVectorBackend:
             return
 
         models = _require_dependency("qdrant_client.http.models")
-        sample_vector = self._model.encode("测试", convert_to_numpy=True, normalize_embeddings=True)
+        sample_vector = self._build_model.encode("测试", convert_to_numpy=True, normalize_embeddings=True)
         vector_size = int(len(sample_vector))
         self._client.create_collection(
             collection_name=self.collection_name,
@@ -203,7 +220,7 @@ class QdrantVectorBackend:
 
         points = []
         for article in self._articles:
-            vector = self._model.encode(
+            vector = self._build_model.encode(
                 build_search_text(article),
                 convert_to_numpy=True,
                 normalize_embeddings=True,
@@ -251,22 +268,29 @@ class QdrantVectorBackend:
 
     def close(self) -> None:
         direct_close_client = not self._has_shared_client_ref
-        direct_close_model = not self._has_shared_model_ref
+        direct_close_query_model = not self._has_shared_query_model_ref
+        direct_close_build_model = not self._has_shared_build_model_ref
         with self._shared_lock:
             self._release_shared_resources()
             if direct_close_client and self._client is not None:
                 close = getattr(self._client, "close", None)
                 if callable(close):
                     close()
-            if direct_close_model and self._model is not None:
-                close = getattr(self._model, "close", None)
+            if direct_close_query_model and self._query_model is not None:
+                close = getattr(self._query_model, "close", None)
+                if callable(close):
+                    close()
+            if direct_close_build_model and self._build_model is not None:
+                close = getattr(self._build_model, "close", None)
                 if callable(close):
                     close()
         self._client = None
-        self._model = None
+        self._query_model = None
+        self._build_model = None
         self._is_ready = False
         self._has_shared_client_ref = False
-        self._has_shared_model_ref = False
+        self._has_shared_query_model_ref = False
+        self._has_shared_build_model_ref = False
 
     def _acquire_shared_client(self, qdrant_client):
         entry = self._shared_clients.get(self._client_cache_key)
@@ -280,35 +304,38 @@ class QdrantVectorBackend:
         self._has_shared_client_ref = True
         return entry["resource"]
 
-    def _acquire_shared_model(self, sentence_transformers):
-        entry = self._shared_models.get(self._model_cache_key)
+    def _acquire_shared_model(self, sentence_transformers, *, cache_key: str, device: str):
+        entry = self._shared_models.get(cache_key)
         if entry is None:
             entry = {
-                "resource": sentence_transformers.SentenceTransformer(self.model_name, device=self._resolved_device),
+                "resource": sentence_transformers.SentenceTransformer(self.model_name, device=device),
                 "refcount": 0,
             }
-            self._shared_models[self._model_cache_key] = entry
+            self._shared_models[cache_key] = entry
         entry["refcount"] = int(entry["refcount"]) + 1
-        self._has_shared_model_ref = True
+        if cache_key == self._query_model_cache_key:
+            self._has_shared_query_model_ref = True
+        if cache_key == self._build_model_cache_key:
+            self._has_shared_build_model_ref = True
         return entry["resource"]
 
     def _release_shared_resources(self) -> None:
         if self._has_shared_client_ref:
-            self._release_shared_entry(self._shared_clients, self._client_cache_key)
-        if self._has_shared_model_ref:
-            self._release_shared_entry(self._shared_models, self._model_cache_key)
+            self._release_shared_entry(self._shared_clients, self._client_cache_key, ref_kind="client")
+        if self._has_shared_query_model_ref:
+            self._release_shared_entry(self._shared_models, self._query_model_cache_key, ref_kind="query")
+        if self._has_shared_build_model_ref:
+            self._release_shared_entry(self._shared_models, self._build_model_cache_key, ref_kind="build")
 
-    def _release_shared_entry(self, registry: dict[str, dict[str, object]], key: str) -> None:
+    def _release_shared_entry(self, registry: dict[str, dict[str, object]], key: str, *, ref_kind: str) -> None:
         entry = registry.get(key)
         if entry is None:
+            self._clear_ref_flag(ref_kind)
             return
         refcount = max(int(entry["refcount"]) - 1, 0)
         if refcount > 0:
             entry["refcount"] = refcount
-            if registry is self._shared_clients:
-                self._has_shared_client_ref = False
-            else:
-                self._has_shared_model_ref = False
+            self._clear_ref_flag(ref_kind)
             return
 
         resource = entry.get("resource")
@@ -316,10 +343,15 @@ class QdrantVectorBackend:
         if callable(close):
             close()
         registry.pop(key, None)
-        if registry is self._shared_clients:
+        self._clear_ref_flag(ref_kind)
+
+    def _clear_ref_flag(self, ref_kind: str) -> None:
+        if ref_kind == "client":
             self._has_shared_client_ref = False
-        else:
-            self._has_shared_model_ref = False
+        elif ref_kind == "query":
+            self._has_shared_query_model_ref = False
+        elif ref_kind == "build":
+            self._has_shared_build_model_ref = False
 
 
 def _require_dependency(module_name: str):

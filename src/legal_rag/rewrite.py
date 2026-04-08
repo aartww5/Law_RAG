@@ -1,5 +1,6 @@
 import importlib.util
 import logging
+import re
 
 from legal_rag.config import DEFAULT_OLLAMA_MODEL
 from legal_rag.types import ConversationState, ConversationTurn, RewriteResult
@@ -13,7 +14,8 @@ LLM_REWRITE_SYSTEM_PROMPT = """你是法律检索问题改写器。
 1. 只能重组和改写历史中已经出现的信息。
 2. 不得补充历史中未出现的新事实。
 3. 不得回答问题，不得给出法律结论，不得解释原因。
-4. 如果当前问题已经足够完整，只做最小改写或原样输出。
+4. 单轮问题也要尽量转成更利于检索的事实表达；如果当前问题已经足够完整，只做最小改写或原样输出。
+5. 优先把口语化问法改成紧凑、事实完整的检索问句，保留年龄、金额、时间、身份关系、行为对象等事实锚点。
 5. 只输出最终改写后的一个问题，不要输出分析、标签、项目符号或多余文字。"""
 
 
@@ -31,15 +33,14 @@ class QueryRewriter:
         query = raw_query.strip()
         if not query:
             return RewriteResult(original_query="", rewritten_query="", rewrite_notes=["unchanged"])
-
-        window_turns = self._get_window_turns(state)
-        if not window_turns:
+        if _looks_like_direct_statute_lookup(query):
             return RewriteResult(
                 original_query=query,
                 rewritten_query=query,
-                rewrite_notes=["unchanged"],
+                rewrite_notes=["direct_lookup", "unchanged"],
             )
 
+        window_turns = self._get_window_turns(state)
         llm_rewritten = None
         llm_notes: list[str] = []
         if self.enable_ollama and importlib.util.find_spec("ollama") is not None:
@@ -69,12 +70,7 @@ class QueryRewriter:
     def _rewrite_with_llm(self, query: str, turns: list[ConversationTurn]) -> str:
         import ollama
 
-        history = self._format_history_for_llm(turns)
-        prompt = (
-            "请将当前问题改写为一个适合法律检索的自包含问题。\n\n"
-            f"最近对话窗口：\n{history}\n\n"
-            f"当前用户问题：{query}\n"
-        )
+        prompt = self._build_prompt(query, turns)
         response = ollama.chat(
             model=self.model_name,
             messages=[
@@ -85,6 +81,21 @@ class QueryRewriter:
             options={"temperature": 0},
         )
         return response["message"]["content"].strip()
+
+    def _build_prompt(self, query: str, turns: list[ConversationTurn]) -> str:
+        lines = ["请将当前问题改写为一个适合法律检索的自包含问题。"]
+        if turns:
+            history = self._format_history_for_llm(turns)
+            lines.extend(["", f"最近对话窗口：\n{history}", "", f"当前用户问题：{query}"])
+        else:
+            lines.extend(
+                [
+                    "",
+                    "这是单轮问题，请只做事实保真的检索改写，不要补充法律结论或法条号。",
+                    f"当前用户问题：{query}",
+                ]
+            )
+        return "\n".join(lines)
 
     def _format_history_for_llm(self, turns: list[ConversationTurn]) -> str:
         lines: list[str] = []
@@ -115,3 +126,12 @@ class QueryRewriter:
             return []
         window_size = max(1, state.max_turns)
         return state.turns[-window_size:]
+
+
+def _looks_like_direct_statute_lookup(text: str) -> bool:
+    normalized = " ".join(text.strip().split())
+    if not normalized:
+        return False
+    has_law_name = bool(re.search(r"(法|法典|条例|规定|解释)", normalized))
+    has_article = bool(re.search(r"(第[\d一二三四五六七八九十百千万零两]+条|article\s*\d+)", normalized, flags=re.IGNORECASE))
+    return has_law_name and has_article

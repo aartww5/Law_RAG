@@ -2,7 +2,7 @@
 
 [runtime]
 mode = "auto"
-ollama_model = "qwen35_legal"
+ollama_model = "qwen35-legal"
 streaming = true
 max_context_articles = 6
 max_history_turns = 4

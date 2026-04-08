@@ -35,6 +35,7 @@ class IndexConfig:
     bm25_cache_path: Path = Path("unified_app/storage/bm25")
     embedding_model: str = "BAAI/bge-m3"
     embedding_device: str = DEFAULT_MODEL_DEVICE
+    embedding_build_device: str = DEFAULT_MODEL_DEVICE
     bm25_top_k: int = DEFAULT_BM25_TOP_K
     vector_top_k: int = DEFAULT_VECTOR_TOP_K
     reranker_model: str = DEFAULT_RERANKER_MODEL
@@ -131,6 +132,10 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
     bm25_cache_path = _resolve_path(index_data.get("bm25_cache_path"), root, defaults.bm25_cache_path)
     embedding_model = str(index_data.get("embedding_model", defaults.embedding_model)).strip() or defaults.embedding_model
     embedding_device = str(index_data.get("embedding_device", defaults.embedding_device)).strip() or defaults.embedding_device
+    embedding_build_device = (
+        str(index_data.get("embedding_build_device", defaults.embedding_build_device)).strip()
+        or defaults.embedding_build_device
+    )
     bm25_top_k = _parse_int(index_data.get("bm25_top_k", defaults.bm25_top_k), defaults.bm25_top_k)
     vector_top_k = _parse_int(index_data.get("vector_top_k", defaults.vector_top_k), defaults.vector_top_k)
     reranker_model = str(index_data.get("reranker_model", defaults.reranker_model)).strip() or defaults.reranker_model
@@ -160,6 +165,8 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         embedding_model = os.environ["LEGAL_RAG_EMBEDDING_MODEL"].strip() or embedding_model
     if "LEGAL_RAG_EMBEDDING_DEVICE" in os.environ:
         embedding_device = os.environ["LEGAL_RAG_EMBEDDING_DEVICE"].strip() or embedding_device
+    if "LEGAL_RAG_EMBEDDING_BUILD_DEVICE" in os.environ:
+        embedding_build_device = os.environ["LEGAL_RAG_EMBEDDING_BUILD_DEVICE"].strip() or embedding_build_device
     if "LEGAL_RAG_BM25_TOP_K" in os.environ:
         bm25_top_k = _parse_int(os.environ["LEGAL_RAG_BM25_TOP_K"], bm25_top_k)
     if "LEGAL_RAG_VECTOR_TOP_K" in os.environ:
@@ -187,6 +194,7 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         bm25_cache_path=bm25_cache_path,
         embedding_model=embedding_model,
         embedding_device=embedding_device,
+        embedding_build_device=embedding_build_device,
         bm25_top_k=bm25_top_k,
         vector_top_k=vector_top_k,
         reranker_model=reranker_model,

@@ -16,6 +16,7 @@ LAW_MATCH_BONUS = 0.2
 ARTICLE_MATCH_BONUS = 1.0
 ARTICLE_CN_MATCH_BONUS = 0.2
 CURRENT_QUERY_WEIGHT = 1.0
+AUXILIARY_QUERY_WEIGHT = 0.25
 BACKGROUND_QUERY_WEIGHT = 0.2
 BM25_WEIGHT = 1.0
 VECTOR_WEIGHT = 1.0
@@ -92,6 +93,7 @@ class HybridRetriever:
                     collection_name=index_config.qdrant_collection_name,
                     model_name=index_config.embedding_model,
                     device=index_config.embedding_device,
+                    build_device=index_config.embedding_build_device,
                 )
             except Exception as exc:  # pragma: no cover - depends on local optional deps
                 LOGGER.warning("vector backend unavailable: %s", exc)
@@ -261,9 +263,10 @@ class HybridRetriever:
         else:
             query_variants = []
         if query_variants:
-            query_batches: list[tuple[QueryVariant, float]] = [
-                (variant, variant.weight * CURRENT_QUERY_WEIGHT) for variant in query_variants
-            ]
+            query_batches = []
+            for variant in query_variants:
+                base_weight = CURRENT_QUERY_WEIGHT if variant.source == "original" else AUXILIARY_QUERY_WEIGHT
+                query_batches.append((variant, variant.weight * base_weight))
         else:
             query_batches = [(QueryVariant(text=current_query, weight=1.0, source="original"), CURRENT_QUERY_WEIGHT)]
 

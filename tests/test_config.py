@@ -101,7 +101,8 @@ def test_config_reads_hybrid_index_settings_from_config_toml() -> None:
                     "[index]",
                     'qdrant_collection_name = "demo_collection"',
                     'embedding_model = "BAAI/bge-m3"',
-                    'embedding_device = "cuda"',
+                    'embedding_device = "cpu"',
+                    'embedding_build_device = "cuda"',
                     'reranker_device = "cuda"',
                 ]
             ),
@@ -112,7 +113,8 @@ def test_config_reads_hybrid_index_settings_from_config_toml() -> None:
 
         assert config.index.qdrant_collection_name == "demo_collection"
         assert config.index.embedding_model == "BAAI/bge-m3"
-        assert config.index.embedding_device == "cuda"
+        assert config.index.embedding_device == "cpu"
+        assert config.index.embedding_build_device == "cuda"
         assert config.index.reranker_device == "cuda"
     finally:
         shutil.rmtree(root, ignore_errors=True)

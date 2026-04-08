@@ -49,6 +49,10 @@ coverage.xml
 *.py,cover
 .hypothesis/
 .pytest_cache/
+.pytest_tmp/
+.pytest-tmp/
+.tmp-pytest/
+pytest_tmp*/
 cover/
 
 # Translations
@@ -146,3 +150,6 @@ cython_debug/
 # Logs
 logs/
 *.log
+
+# Local probe artifacts
+browser_probe_report.*

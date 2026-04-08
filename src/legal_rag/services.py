@@ -11,6 +11,7 @@ from legal_rag.retrievers.exact_match import ExactMatchRetriever
 from legal_rag.retrievers.hybrid import HybridRetriever
 from legal_rag.retrievers.mini import MiniRetriever
 from legal_rag.router.auto import AutoRouter
+from legal_rag.utils.query_decomposition import OllamaQueryDecomposer
 from legal_rag.types import (
     ConversationState,
     ConversationTurn,
@@ -41,7 +42,11 @@ class LegalAssistantService:
         self.hybrid_retriever = hybrid_retriever
         self.mini_retriever = mini_retriever
         self.router = router or AutoRouter()
-        self.generator = generator or SimpleGenerator(config.runtime.ollama_model)
+        self.generator = generator or SimpleGenerator(
+            config.runtime.ollama_model,
+            num_ctx=config.runtime.ollama_num_ctx,
+            num_predict=config.runtime.ollama_num_predict,
+        )
         self.rewriter = rewriter or QueryRewriter(config.runtime.ollama_model, enable_ollama=True)
 
     @classmethod
@@ -133,10 +138,22 @@ class LegalAssistantService:
         service = cls(
             config=config,
             exact_retriever=ExactMatchRetriever(article_records),
-            hybrid_retriever=HybridRetriever.from_articles(article_records, index_config=config.index),
+            hybrid_retriever=HybridRetriever.from_articles(
+                article_records,
+                index_config=config.index,
+                decomposer=OllamaQueryDecomposer(
+                    model_name=config.runtime.ollama_model,
+                    max_queries=config.index.decomposition_max_queries,
+                    num_ctx=config.runtime.ollama_num_ctx,
+                ),
+            ),
             mini_retriever=mini_retriever,
             router=AutoRouter(),
-            generator=SimpleGenerator(config.runtime.ollama_model),
+            generator=SimpleGenerator(
+                config.runtime.ollama_model,
+                num_ctx=config.runtime.ollama_num_ctx,
+                num_predict=config.runtime.ollama_num_predict,
+            ),
         )
         service.mini_available = mini_available
         return service
@@ -238,3 +255,9 @@ class LegalAssistantService:
             answer_summary=summary,
             citations=answer.context.citations,
         )
+
+    def close(self) -> None:
+        for component in (self.hybrid_retriever, self.mini_retriever, self.generator):
+            close = getattr(component, "close", None)
+            if callable(close):
+                close()

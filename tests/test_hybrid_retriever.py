@@ -19,10 +19,12 @@ def test_app_config_reads_dedicated_reranker_settings_from_env() -> None:
     previous_reranker_device = os.environ.get("LEGAL_RAG_RERANKER_DEVICE")
     previous_top_k = os.environ.get("LEGAL_RAG_RERANK_TOP_K")
     previous_embedding_device = os.environ.get("LEGAL_RAG_EMBEDDING_DEVICE")
+    previous_embedding_build_device = os.environ.get("LEGAL_RAG_EMBEDDING_BUILD_DEVICE")
     os.environ["LEGAL_RAG_RERANKER_MODEL"] = "BAAI/bge-reranker-base"
     os.environ["LEGAL_RAG_RERANKER_DEVICE"] = "cuda"
     os.environ["LEGAL_RAG_RERANK_TOP_K"] = "12"
-    os.environ["LEGAL_RAG_EMBEDDING_DEVICE"] = "cuda"
+    os.environ["LEGAL_RAG_EMBEDDING_DEVICE"] = "cpu"
+    os.environ["LEGAL_RAG_EMBEDDING_BUILD_DEVICE"] = "cuda"
 
     try:
         config = AppConfig.from_env(root)
@@ -43,11 +45,16 @@ def test_app_config_reads_dedicated_reranker_settings_from_env() -> None:
             os.environ.pop("LEGAL_RAG_EMBEDDING_DEVICE", None)
         else:
             os.environ["LEGAL_RAG_EMBEDDING_DEVICE"] = previous_embedding_device
+        if previous_embedding_build_device is None:
+            os.environ.pop("LEGAL_RAG_EMBEDDING_BUILD_DEVICE", None)
+        else:
+            os.environ["LEGAL_RAG_EMBEDDING_BUILD_DEVICE"] = previous_embedding_build_device
 
     assert config.index.reranker_model == "BAAI/bge-reranker-base"
     assert config.index.reranker_device == "cuda"
     assert config.index.rerank_top_k == 12
-    assert config.index.embedding_device == "cuda"
+    assert config.index.embedding_device == "cpu"
+    assert config.index.embedding_build_device == "cuda"
 
 
 def test_hybrid_retriever_returns_ranked_docs_from_shared_contract() -> None:
@@ -113,6 +120,7 @@ def test_qdrant_vector_backend_close_releases_client_state() -> None:
         collection_name="demo",
         model_name="demo-model",
         device="cpu",
+        build_device="cpu",
         articles=[],
     )
 
@@ -125,14 +133,16 @@ def test_qdrant_vector_backend_close_releases_client_state() -> None:
 
     client = FakeClient()
     backend._client = client
-    backend._model = object()
+    backend._query_model = object()
+    backend._build_model = object()
     backend._is_ready = True
 
     backend.close()
 
     assert client.closed is True
     assert backend._client is None
-    assert backend._model is None
+    assert backend._query_model is None
+    assert backend._build_model is None
     assert backend._is_ready is False
 
 
@@ -231,6 +241,7 @@ def test_qdrant_vector_backend_reuses_shared_local_client(monkeypatch, tmp_path:
         collection_name="laws",
         model_name="demo-embedding",
         device="cuda",
+        build_device="cuda",
         articles=[article],
     )
     backend_two = QdrantVectorBackend(
@@ -238,6 +249,7 @@ def test_qdrant_vector_backend_reuses_shared_local_client(monkeypatch, tmp_path:
         collection_name="laws",
         model_name="demo-embedding",
         device="cuda",
+        build_device="cuda",
         articles=[article],
     )
     backend_one._ensure_ready()
@@ -246,7 +258,8 @@ def test_qdrant_vector_backend_reuses_shared_local_client(monkeypatch, tmp_path:
     assert len(created_clients) == 1
     assert len(created_models) == 1
     assert backend_one._client is backend_two._client
-    assert backend_one._model is backend_two._model
+    assert backend_one._query_model is backend_two._query_model
+    assert backend_one._build_model is backend_two._build_model
     assert created_models[0].device == "cuda"
     assert created_clients[0].closed is False
 
@@ -257,6 +270,132 @@ def test_qdrant_vector_backend_reuses_shared_local_client(monkeypatch, tmp_path:
     backend_two.close()
 
     assert created_clients[0].closed is True
+
+
+def test_qdrant_vector_backend_splits_build_and_query_devices(monkeypatch, tmp_path: Path) -> None:
+    backends_module = importlib.import_module("legal_rag.retrievers.backends")
+    types_module = importlib.import_module("legal_rag.types")
+    QdrantVectorBackend = backends_module.QdrantVectorBackend
+    NormalizedArticle = types_module.NormalizedArticle
+
+    article = NormalizedArticle(
+        canonical_id="law:20",
+        law_name="Civil Code",
+        law_aliases=["Civil Code"],
+        article_id_cn="Article 20",
+        article_id_num="20",
+        content="A minor under the age of eight is a person without civil capacity.",
+        chapter=None,
+        section=None,
+        source="civil_code.txt",
+        source_line=20,
+    )
+
+    model_encode_calls: dict[str, list[str]] = {}
+
+    class FakeVector(list):
+        def tolist(self):
+            return list(self)
+
+    class FakeClient:
+        def __init__(self, *, path: str) -> None:
+            self.path = path
+            self.collections: set[str] = set()
+
+        def collection_exists(self, collection_name: str) -> bool:
+            return collection_name in self.collections
+
+        def create_collection(self, *, collection_name: str, vectors_config) -> None:
+            self.collections.add(collection_name)
+
+        def upsert(self, collection_name: str, *, points, wait: bool) -> None:
+            self.collections.add(collection_name)
+
+        def query_points(self, *, collection_name: str, query, limit: int, with_payload: bool, with_vectors: bool):
+            return type(
+                "FakeResponse",
+                (),
+                {
+                    "points": [
+                        type(
+                            "FakePoint",
+                            (),
+                            {
+                                "payload": {
+                                    "canonical_id": article.canonical_id,
+                                    "law_name": article.law_name,
+                                    "article_id_cn": article.article_id_cn,
+                                },
+                                "score": 0.91,
+                            },
+                        )()
+                    ]
+                },
+            )()
+
+        def close(self) -> None:
+            return None
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name: str, device: str = "cpu") -> None:
+            self.model_name = model_name
+            self.device = device
+            model_encode_calls.setdefault(device, [])
+
+        def encode(self, text: str, *, convert_to_numpy: bool, normalize_embeddings: bool):
+            model_encode_calls[self.device].append(text)
+            return FakeVector([0.1, 0.2, 0.3])
+
+    class FakeVectorParams:
+        def __init__(self, *, size: int, distance: str) -> None:
+            self.size = size
+            self.distance = distance
+
+    class FakePointStruct:
+        def __init__(self, *, id: str, vector: list[float], payload: dict) -> None:
+            self.id = id
+            self.vector = vector
+            self.payload = payload
+
+    class FakeModelsModule:
+        VectorParams = FakeVectorParams
+        PointStruct = FakePointStruct
+
+        class Distance:
+            COSINE = "cosine"
+
+    class FakeQdrantModule:
+        QdrantClient = FakeClient
+
+    def fake_require_dependency(module_name: str):
+        if module_name == "qdrant_client":
+            return FakeQdrantModule
+        if module_name == "sentence_transformers":
+            return type("FakeSentenceModule", (), {"SentenceTransformer": FakeSentenceTransformer})
+        if module_name == "qdrant_client.http.models":
+            return FakeModelsModule
+        raise AssertionError(f"unexpected dependency request: {module_name}")
+
+    monkeypatch.setattr(backends_module, "_require_dependency", fake_require_dependency)
+    monkeypatch.setattr(QdrantVectorBackend, "_shared_clients", {}, raising=False)
+    monkeypatch.setattr(QdrantVectorBackend, "_shared_models", {}, raising=False)
+    monkeypatch.setattr(backends_module, "resolve_torch_device", lambda preferred: preferred)
+
+    backend = QdrantVectorBackend(
+        storage_path=tmp_path / "qdrant",
+        collection_name="laws",
+        model_name="demo-embedding",
+        device="cpu",
+        build_device="cuda",
+        articles=[article],
+    )
+
+    result = backend.retrieve("can parents take back the watch")
+
+    assert result[0][0] == article.canonical_id
+    assert "测试" in model_encode_calls["cuda"]
+    assert any("Civil Code" in text for text in model_encode_calls["cuda"])
+    assert "can parents take back the watch" in model_encode_calls["cpu"]
 
 
 def test_hybrid_retriever_can_rank_real_articles() -> None:
@@ -662,6 +801,56 @@ def test_hybrid_retriever_uses_llm_query_decomposition_and_configured_limits() -
     assert vector_backend.limits == [50, 50]
 
 
+def test_hybrid_retriever_passes_separate_query_and_build_devices(monkeypatch) -> None:
+    retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
+    config_module = importlib.import_module("legal_rag.config")
+    types_module = importlib.import_module("legal_rag.types")
+
+    HybridRetriever = retriever_module.HybridRetriever
+    IndexConfig = config_module.IndexConfig
+    NormalizedArticle = types_module.NormalizedArticle
+
+    articles = [
+        NormalizedArticle(
+            canonical_id="law:1",
+            law_name="Civil Code",
+            law_aliases=["Civil Code"],
+            article_id_cn="Article 1",
+            article_id_num="1",
+            content="Civil code article one.",
+            chapter=None,
+            section=None,
+            source="civil_code.txt",
+            source_line=1,
+        )
+    ]
+
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeVectorBackend:
+        def retrieve(self, question: str, *, limit: int = 20):
+            return []
+
+    def fake_from_articles(cls, articles_arg, **kwargs):
+        captured_kwargs.update(kwargs)
+        return FakeVectorBackend()
+
+    monkeypatch.setattr(
+        retriever_module.QdrantVectorBackend,
+        "from_articles",
+        classmethod(fake_from_articles),
+    )
+    monkeypatch.setattr(retriever_module.Bm25Backend, "from_articles", classmethod(lambda cls, articles_arg: None))
+    monkeypatch.setattr(retriever_module, "CrossEncoderReranker", lambda *args, **kwargs: None)
+
+    index_config = IndexConfig(embedding_device="cpu", embedding_build_device="cuda")
+
+    HybridRetriever.from_articles(articles, index_config=index_config)
+
+    assert captured_kwargs["device"] == "cpu"
+    assert captured_kwargs["build_device"] == "cuda"
+
+
 def test_hybrid_retriever_uses_model_reranker_to_reorder_rrf_candidates() -> None:
     retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
     decomposition_module = importlib.import_module("legal_rag.utils.query_decomposition")
@@ -746,6 +935,81 @@ def test_hybrid_retriever_uses_model_reranker_to_reorder_rrf_candidates() -> Non
     assert result.raw_signals["rerank_query_count"] == 2
     assert reranker.calls[0][0] == [
         ("delivery rider injures pedestrian liability", 1.0),
-        ("assigned work employer liability", 0.65),
+        ("assigned work employer liability", 0.1625),
     ]
     assert reranker.calls[0][1] == ["traffic:76", "civil:1191"]
+
+
+def test_hybrid_retriever_keeps_original_query_as_primary_signal_when_decomposition_drifts() -> None:
+    retriever_module = importlib.import_module("legal_rag.retrievers.hybrid")
+    decomposition_module = importlib.import_module("legal_rag.utils.query_decomposition")
+    types_module = importlib.import_module("legal_rag.types")
+
+    HybridRetriever = retriever_module.HybridRetriever
+    QueryVariant = decomposition_module.QueryVariant
+    NormalizedArticle = types_module.NormalizedArticle
+
+    articles = [
+        NormalizedArticle(
+            canonical_id="civil:20",
+            law_name="Civil Code",
+            law_aliases=["Civil Code"],
+            article_id_cn="Article 20",
+            article_id_num="20",
+            content="A minor under eight years old has no capacity for civil conduct.",
+            chapter=None,
+            section=None,
+            source="civil.txt",
+            source_line=20,
+        ),
+        NormalizedArticle(
+            canonical_id="civil:145",
+            law_name="Civil Code",
+            law_aliases=["Civil Code"],
+            article_id_cn="Article 145",
+            article_id_num="145",
+            content="A person with limited capacity for civil conduct performs a civil juristic act.",
+            chapter=None,
+            section=None,
+            source="civil.txt",
+            source_line=145,
+        ),
+    ]
+
+    original_question = "7-year-old sold a watch; can parents recover it"
+
+    class FakeBm25Backend:
+        def retrieve(self, question: str, *, limit: int = 20):
+            if question == original_question:
+                return [("civil:20", 20.0), ("civil:145", 18.0)]
+            return [("civil:145", 21.0), ("civil:20", 17.0)]
+
+    class FakeVectorBackend:
+        def retrieve(self, question: str, *, limit: int = 20):
+            if question == original_question:
+                return [("civil:20", 0.95), ("civil:145", 0.80)]
+            return [("civil:145", 0.96), ("civil:20", 0.79)]
+
+    class FakeDecomposer:
+        def decompose(self, question: str, *, background: str = ""):
+            assert question == original_question
+            assert background == ""
+            return [
+                QueryVariant(text=question, weight=1.0, source="original"),
+                QueryVariant(text="limited civil capacity disposing another person's property", weight=0.9, source="statutory_phrase"),
+                QueryVariant(text="parents reclaim minor disposal of another person's property", weight=0.65, source="legal_concept"),
+                QueryVariant(text="effect of minor disposing another person's property", weight=0.8, source="issue"),
+            ]
+
+    retriever = HybridRetriever.from_articles(
+        articles,
+        bm25_backend=FakeBm25Backend(),
+        vector_backend=FakeVectorBackend(),
+        reranker=None,
+        decomposer=FakeDecomposer(),
+        enable_backends=False,
+    )
+
+    result = retriever.retrieve(original_question)
+
+    assert result.docs[0].canonical_id == "civil:20"

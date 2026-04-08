@@ -68,6 +68,23 @@ def build_startup_message(service: LegalAssistantService) -> str:
     )
 
 
+def close_service_instance(service) -> None:
+    close = getattr(service, "close", None)
+    if callable(close):
+        try:
+            close()
+        except Exception as exc:  # pragma: no cover - defensive cleanup path
+            logging.getLogger(__name__).warning("service close failed: %s", exc)
+
+
+def release_session_service(session) -> None:
+    service = session.get("service")
+    if service is None:
+        return
+    close_service_instance(service)
+    session.set("service", None)
+
+
 def format_answer_message(answer) -> str:
     reasons = ", ".join(answer.route_decision.reasons) if answer.route_decision.reasons else "none"
     citations = "\n".join(f"- {citation}" for citation in answer.context.citations) or "- none"
@@ -174,6 +191,7 @@ async def process_user_message(
 if cl is not None:
     @cl.on_chat_start
     async def start() -> None:
+        release_session_service(cl.user_session)
         service = build_service()
         cl.user_session.set("service", service)
         cl.user_session.set(
@@ -197,10 +215,23 @@ if cl is not None:
         )
 
 
+    @cl.on_chat_end
+    async def on_chat_end() -> None:
+        release_session_service(cl.user_session)
+
+
+    @cl.on_stop
+    async def on_stop() -> None:
+        release_session_service(cl.user_session)
+
+
 def main() -> None:
     configure_logging()
     service = build_service()
-    print(build_startup_message(service))
+    try:
+        print(build_startup_message(service))
+    finally:
+        close_service_instance(service)
 
 
 if __name__ == "__main__":
