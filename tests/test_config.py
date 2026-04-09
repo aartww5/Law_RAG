@@ -150,3 +150,45 @@ def test_config_reads_retrieval_and_generation_limits_from_config_toml() -> None
         assert config.index.decomposition_max_queries == 4
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def test_config_reads_local_auth_and_chat_storage_settings() -> None:
+    root = make_test_root()
+    try:
+        config_dir = root / "unified_app"
+        config_dir.mkdir()
+        (config_dir / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[storage]",
+                    'chat_db_path = "storage/chat.sqlite3"',
+                    "",
+                    "[[auth.users]]",
+                    'username = "demo"',
+                    'display_name = "Demo User"',
+                    'password = "secret123"',
+                    "",
+                    "[[auth.users]]",
+                    'username = "hashed"',
+                    'display_name = "Hashed User"',
+                    'password_hash = "sha256$abc123"',
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = AppConfig.from_env(root)
+
+        assert config.storage.chat_db_path == root / "storage" / "chat.sqlite3"
+        assert [user.username for user in config.auth.users] == ["demo", "hashed"]
+        assert config.auth.users[0].password == "secret123"
+        assert config.auth.users[1].password_hash == "sha256$abc123"
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_config_defaults_keep_auth_and_storage_empty() -> None:
+    config = AppConfig()
+
+    assert config.auth.users == []
+    assert config.storage.chat_db_path.name == "chat_history.sqlite3"

@@ -47,9 +47,29 @@ class IndexConfig:
 
 
 @dataclass
+class StorageConfig:
+    chat_db_path: Path = Path("unified_app/storage/chat_history.sqlite3")
+
+
+@dataclass
+class LocalAuthUser:
+    username: str
+    display_name: str | None = None
+    password: str | None = None
+    password_hash: str | None = None
+
+
+@dataclass
+class AuthConfig:
+    users: list[LocalAuthUser] = field(default_factory=list)
+
+
+@dataclass
 class AppConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     index: IndexConfig = field(default_factory=IndexConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
 
     @classmethod
     def from_env(cls, root_dir: str | Path) -> "AppConfig":
@@ -57,7 +77,9 @@ class AppConfig:
         config_data = _load_config_toml(root)
         runtime = _build_runtime_config(config_data)
         index = _build_index_config(root, config_data)
-        return cls(runtime=runtime, index=index)
+        storage = _build_storage_config(root, config_data)
+        auth = _build_auth_config(config_data)
+        return cls(runtime=runtime, index=index, storage=storage, auth=auth)
 
 
 def _load_config_toml(root: Path) -> dict:
@@ -204,6 +226,46 @@ def _build_index_config(root: Path, config_data: dict) -> IndexConfig:
         mini_working_dir=mini_working_dir,
         corpus_dir=corpus_dir,
     )
+
+
+def _build_storage_config(root: Path, config_data: dict) -> StorageConfig:
+    defaults = StorageConfig()
+    storage_data = config_data.get("storage", {})
+    chat_db_path = _resolve_path(storage_data.get("chat_db_path"), root, defaults.chat_db_path)
+
+    if "LEGAL_RAG_CHAT_DB_PATH" in os.environ:
+        chat_db_path = _resolve_path(os.environ["LEGAL_RAG_CHAT_DB_PATH"], root, chat_db_path)
+
+    return StorageConfig(chat_db_path=chat_db_path)
+
+
+def _build_auth_config(config_data: dict) -> AuthConfig:
+    auth_data = config_data.get("auth", {})
+    raw_users = auth_data.get("users", [])
+    users: list[LocalAuthUser] = []
+
+    for raw_user in raw_users:
+        username = str(raw_user.get("username", "")).strip()
+        if not username:
+            continue
+
+        display_name_value = raw_user.get("display_name")
+        display_name = str(display_name_value).strip() if display_name_value is not None else None
+        password_value = raw_user.get("password")
+        password = str(password_value) if password_value is not None else None
+        password_hash_value = raw_user.get("password_hash")
+        password_hash = str(password_hash_value) if password_hash_value is not None else None
+
+        users.append(
+            LocalAuthUser(
+                username=username,
+                display_name=display_name or None,
+                password=password,
+                password_hash=password_hash,
+            )
+        )
+
+    return AuthConfig(users=users)
 
 
 def _resolve_path(value: str | Path | None, root: Path, fallback: Path) -> Path:

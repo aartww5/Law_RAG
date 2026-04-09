@@ -1,7 +1,10 @@
 """Unified legal RAG application entrypoint."""
 
 import asyncio
+import hashlib
+import hmac
 import logging
+import os
 from pathlib import Path
 import sys
 
@@ -14,7 +17,20 @@ LOG_FILE = LOG_DIR / "unified_app.log"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from legal_rag.config import AppConfig
+
+def ensure_chainlit_auth_secret() -> str:
+    secret = os.environ.get("CHAINLIT_AUTH_SECRET")
+    if secret:
+        return secret
+    local_secret = hashlib.sha256(str(CURRENT_DIR).encode("utf-8")).hexdigest()
+    os.environ["CHAINLIT_AUTH_SECRET"] = local_secret
+    return local_secret
+
+
+ensure_chainlit_auth_secret()
+
+from legal_rag.chat_history import SQLiteChatHistoryDataLayer
+from legal_rag.config import AppConfig, AuthConfig, LocalAuthUser
 from legal_rag.services import LegalAssistantService
 from legal_rag.types import ConversationState, ConversationTurn
 
@@ -52,9 +68,23 @@ def configure_logging() -> Path:
     return LOG_FILE
 
 
+_DATA_LAYER: SQLiteChatHistoryDataLayer | None = None
+
+
+def get_app_config() -> AppConfig:
+    return AppConfig.from_env(PROJECT_ROOT)
+
+
+def get_data_layer_instance() -> SQLiteChatHistoryDataLayer:
+    global _DATA_LAYER
+    if _DATA_LAYER is None:
+        _DATA_LAYER = SQLiteChatHistoryDataLayer(get_app_config().storage.chat_db_path)
+    return _DATA_LAYER
+
+
 def build_service() -> LegalAssistantService:
     configure_logging()
-    config = AppConfig.from_env(PROJECT_ROOT)
+    config = get_app_config()
     if config.index.laws_dir.exists():
         return LegalAssistantService.from_config(config)
     return LegalAssistantService.for_test(mode=config.runtime.mode)
@@ -83,6 +113,106 @@ def release_session_service(session) -> None:
         return
     close_service_instance(service)
     session.set("service", None)
+
+
+def hash_password(password: str) -> str:
+    digest = hashlib.sha256(password.encode("utf-8")).hexdigest()
+    return f"sha256${digest}"
+
+
+def verify_local_password(password: str, user: LocalAuthUser) -> bool:
+    if user.password_hash:
+        prefix, _, digest = user.password_hash.partition("$")
+        if prefix == "sha256" and digest:
+            candidate = hashlib.sha256(password.encode("utf-8")).hexdigest()
+            return hmac.compare_digest(candidate, digest)
+        return hmac.compare_digest(hash_password(password), user.password_hash)
+    if user.password is None:
+        return False
+    return hmac.compare_digest(user.password, password)
+
+
+async def authenticate_local_user(username: str, password: str, config: AppConfig | None = None):
+    if cl is None:
+        return None
+    active_config = config or get_app_config()
+    for user in active_config.auth.users:
+        if user.username != username:
+            continue
+        if not verify_local_password(password, user):
+            return None
+        return cl.User(
+            identifier=user.username,
+            display_name=user.display_name or user.username,
+            metadata={"provider": "local_config"},
+        )
+    return None
+
+
+def serialize_conversation_turn(turn: ConversationTurn) -> dict:
+    return {
+        "raw_query": turn.raw_query,
+        "rewritten_query": turn.rewritten_query,
+        "answer_summary": turn.answer_summary,
+        "citations": list(turn.citations),
+    }
+
+
+def deserialize_conversation_turn(payload: dict | None) -> ConversationTurn | None:
+    if not isinstance(payload, dict):
+        return None
+    raw_query = str(payload.get("raw_query", "")).strip()
+    rewritten_query = str(payload.get("rewritten_query", "")).strip()
+    answer_summary = str(payload.get("answer_summary", "")).strip()
+    if not raw_query or not rewritten_query:
+        return None
+    citations = payload.get("citations", [])
+    if not isinstance(citations, list):
+        citations = []
+    return ConversationTurn(
+        raw_query=raw_query,
+        rewritten_query=rewritten_query,
+        answer_summary=answer_summary,
+        citations=[str(citation) for citation in citations],
+    )
+
+
+def rebuild_conversation_state_from_thread(thread: dict, max_turns: int) -> ConversationState:
+    state = ConversationState(max_turns=max_turns)
+    steps = thread.get("steps", [])
+    if not isinstance(steps, list):
+        return state
+
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        step_type = str(step.get("type", ""))
+        if "assistant_message" not in step_type:
+            continue
+        metadata = step.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                import json
+
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+        turn = deserialize_conversation_turn(metadata.get("conversation_turn"))
+        if turn is not None:
+            state.add_turn(turn)
+    return state
+
+
+async def bind_thread_to_current_user() -> None:
+    if cl is None or not has_chainlit_context():
+        return
+    session = cl.context.session
+    user = getattr(session, "user", None)
+    user_id = getattr(user, "id", None)
+    thread_id = getattr(session, "thread_id", None)
+    if not user_id or not thread_id:
+        return
+    await get_data_layer_instance().update_thread(thread_id=thread_id, user_id=user_id)
 
 
 def format_answer_message(answer) -> str:
@@ -184,11 +314,27 @@ async def process_user_message(
     state.add_turn(conversation_turn)
     session.set("conversation_state", state)
 
+    message_metadata = getattr(assistant_message, "metadata", None)
+    if not isinstance(message_metadata, dict):
+        message_metadata = {}
+    message_metadata["conversation_turn"] = serialize_conversation_turn(conversation_turn)
+    assistant_message.metadata = message_metadata
+
     assistant_message.content = format_answer_message(answer)
     await assistant_message.update()
 
 
 if cl is not None:
+    @cl.data_layer
+    def data_layer():
+        return get_data_layer_instance()
+
+
+    @cl.password_auth_callback
+    async def password_auth_callback(username: str, password: str):
+        return await authenticate_local_user(username, password)
+
+
     @cl.on_chat_start
     async def start() -> None:
         release_session_service(cl.user_session)
@@ -198,7 +344,22 @@ if cl is not None:
             "conversation_state",
             ConversationState(max_turns=service.config.runtime.max_history_turns),
         )
-        await cl.Message(content=build_startup_message(service)).send()
+        await bind_thread_to_current_user()
+
+
+    @cl.on_chat_resume
+    async def on_chat_resume(thread: dict) -> None:
+        release_session_service(cl.user_session)
+        service = build_service()
+        cl.user_session.set("service", service)
+        cl.user_session.set(
+            "conversation_state",
+            rebuild_conversation_state_from_thread(
+                thread,
+                max_turns=service.config.runtime.max_history_turns,
+            ),
+        )
+        await bind_thread_to_current_user()
 
 
     @cl.on_message
@@ -207,6 +368,12 @@ if cl is not None:
         if service is None:
             service = build_service()
             cl.user_session.set("service", service)
+        if cl.user_session.get("conversation_state") is None:
+            cl.user_session.set(
+                "conversation_state",
+                ConversationState(max_turns=service.config.runtime.max_history_turns),
+            )
+        await bind_thread_to_current_user()
         await process_user_message(
             message,
             service=service,

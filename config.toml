@@ -13,3 +13,11 @@ qdrant_path = "unified_app/storage/qdrant"
 bm25_cache_path = "unified_app/storage/bm25"
 mini_working_dir = "test/minirag_working"
 corpus_dir = "unified_app/storage/corpus"
+
+[storage]
+chat_db_path = "unified_app/storage/chat_history.sqlite3"
+
+[[auth.users]]
+username = "admin"
+display_name = "Local Admin"
+password = "admin123"
